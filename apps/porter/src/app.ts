@@ -339,6 +339,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   if (tokens.legacyNote !== null) options.log?.(tokens.legacyNote);
   if (tokens.skipped.length > 0) options.log?.(`the door's token store holds ${String(tokens.skipped.length)} record(s) of the wrong shape, left out: ${tokens.skipped.join(', ')}`);
   const codes: DeviceCodes = options.codes ?? new DeviceCodes(options.now);
+  // Renewals waiting to be dropped: those whose code lapsed untaken, and those a drop failed for, kept for the next tick.
+  let dropsHeld: MintedToken[] = [];
+  let dropping: boolean = false;
   // Who a request is from, and whether it came by https, is the socket's word unless the peer is a proxy
   // the operator named (`PORTER_TRUSTED_PROXIES`): only such a peer's forwarded headers are believed. A
   // peer nobody named that writes `X-Forwarded-For` is counted by its own address.
@@ -649,7 +652,11 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       // Approved: the grant waits for chell's poll, and the token already held stands until that poll takes it.
       // The code died while the token was minted: the new one goes alone.
       if (!codes.authorise(wanted.code, claimed.claim, grant, made)) {
-        await tokens.renewal_settle(made, false);
+        // A drop that fails here joins the sweep's: the undelivered token is tried again at the next tick, never forgotten.
+        await tokens.renewal_settle(made, false).catch((error: unknown): void => {
+          dropsHeld.push(made);
+          options.log?.(`a device login's undelivered token could not be dropped yet: ${error instanceof Error ? error.message : String(error)}; it is tried again`);
+        });
         return refuse(410, `the code ${wanted.code} ran out while the door minted its token; run chell auth login again`);
       }
       options.log?.(`minted a door token "${name}" for ${username} by device code (dies ${made.record.expires.slice(0, 10)})`);
@@ -1046,9 +1053,6 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
 
   // The session's wire: the upgrade is relayed byte for byte to the daemon,
   // with the token on the upgrade URL, which the daemon reads.
-  // Renewals waiting to be dropped: those whose code lapsed untaken, and those a drop failed for, kept for the next tick.
-  let dropsHeld: MintedToken[] = [];
-  let dropping: boolean = false;
   /**
    * Drops lapsed renewals one at a time (a store of tokens is no place for a burst); a drop that fails is kept for
    * the next tick and said, so a token nobody received never stands forgotten.

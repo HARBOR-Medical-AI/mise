@@ -259,6 +259,8 @@ export interface StoreHooks {
   listed_after?: () => void | Promise<void>;
   /** Told when upkeep after a publication failed (the version stands): the door logs it. */
   upkeep_failed?: (what: string, error: unknown) => void;
+  /** How a name among the marks is looked at, for a test that makes the look fail. */
+  mark_lstat?: (path: string) => Promise<Stats>;
 }
 
 /**
@@ -611,7 +613,8 @@ export class TokenStore {
       let highest: number = 0;
       for (const name of await readdir(marks.at)) {
         const n: number = /^[1-9][0-9]{0,11}$/.test(name) ? Number(name) : 0;
-        if (n > highest && n <= VERSION_LAST && (await mark_isOwn(join(marks.at, name)))) highest = n;
+        // An entry that cannot be inspected is not read as no mark: the reading that detects lost state never quietly lowers.
+        if (n > highest && n <= VERSION_LAST && (await mark_inspect(join(marks.at, name), this.hooks.mark_lstat)) === 'mark') highest = n;
       }
       return highest;
     } finally {
@@ -638,13 +641,14 @@ export class TokenStore {
       } catch (error: unknown) {
         // A mark already there counts only if it is one: something else at its name is not taken for it.
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        if (!(await mark_isOwn(mark))) throw new Error(`the door's token store mark ${mark} is not a mark of its own`);
+        if ((await mark_inspect(mark, this.hooks.mark_lstat)) !== 'mark') throw new Error(`the door's token store mark ${mark} is not a mark of its own`);
       }
       // Pruning is upkeep, entry by entry: only the store's own marks go, and nothing else found there is touched or stops the mark.
       for (const name of await readdir(marks.at)) {
         if (!/^[1-9][0-9]{0,11}$/.test(name) || Number(name) >= n - VERSIONS_KEPT) continue;
         const path: string = join(marks.at, name);
-        if (await mark_isOwn(path)) await rm(path, { force: true }).catch((): void => undefined);
+        // Pruning may pass over an entry it cannot be sure of.
+        if ((await mark_inspect(path, this.hooks.mark_lstat).catch((): 'uncertain' => 'uncertain')) === 'mark') await rm(path, { force: true }).catch((): void => undefined);
       }
     } finally {
       await handle_close(marks.handle);
@@ -965,19 +969,30 @@ export class TokenStore {
 }
 
 /**
- * Whether a name is one of the store's marks: an empty regular file of this account's.
+ * What a name among the marks is: one of the store's marks (an empty
+ * regular file of this account's), not one (shown otherwise), or gone (it
+ * went between the listing and the look). Any other failure to look is
+ * thrown, never read as "not a mark".
  *
  * @param path - The name, reached through the held folder of marks.
- * @returns True for a mark.
+ * @param look - How to look (`lstat`, unless a test gives a double).
+ * @returns What it is.
+ * @throws {Error} When it cannot be looked at for another reason than its being gone.
  *
  * @example
  * ```ts
- * await mark_isOwn(join(marks.at, '12'));
+ * await mark_inspect(join(marks.at, '12')); // 'mark'
  * ```
  */
-async function mark_isOwn(path: string): Promise<boolean> {
-  const found: Stats | null = await lstat(path).catch((): null => null);
-  return found !== null && found.isFile() && found.size === 0 && (typeof process.getuid !== 'function' || found.uid === process.getuid());
+async function mark_inspect(path: string, look: (path: string) => Promise<Stats> = lstat): Promise<'mark' | 'other' | 'gone'> {
+  let found: Stats;
+  try {
+    found = await look(path);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'gone';
+    throw error;
+  }
+  return found.isFile() && found.size === 0 && (typeof process.getuid !== 'function' || found.uid === process.getuid()) ? 'mark' : 'other';
 }
 
 /**

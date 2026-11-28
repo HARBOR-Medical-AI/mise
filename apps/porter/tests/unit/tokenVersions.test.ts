@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, renameSync, symlinkSync, utimesSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'node:fs';
+import * as nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TokenStore, LAST_USED_SAMPLE_MS, tokenRecord_read, token_hash, type StoreHooks } from '../../src/tokens.js';
@@ -645,6 +646,27 @@ describe('what Codex found in the seventh form (seq 410)', () => {
     expect(readFileSync(join(`${path}.marks`, '2'), 'utf8')).toBe('kept');
     expect(existsSync(join(`${path}.marks`, String(top + 50)))).toBe(true);
     expect(existsSync(join(`${path}.marks`, String(top + 60)))).toBe(true);
+  });
+});
+
+describe('what Codex found in the eighth form (seq 412)', () => {
+  it('a mark that cannot be looked at fails the read; one that went meanwhile is passed over; pruning passes over doubt', async () => {
+    const seed: TokenStore = await writer();
+    for (let i = 0; i < 12; i++) await seed.mint(`u${String(i)}@c/`, `u${String(i)}`, 'n');
+    const top: number = versions().at(-1) ?? 0;
+    const failing = (code: string, at: string) => async (name: string): Promise<nodeFs.Stats> => {
+      if (name.endsWith(`/${at}`)) throw Object.assign(new Error(code), { code });
+      return nodeFs.lstatSync(name);
+    };
+    const eio: TokenStore = new TokenStore(path, 30, (): Date => new Date(), { mark_lstat: failing('EIO', String(top)) });
+    await expect(eio.list()).rejects.toThrow('EIO');
+    const gone: TokenStore = new TokenStore(path, 30, (): Date => new Date(), { mark_lstat: failing('ENOENT', String(top)) });
+    expect(await gone.list()).toHaveLength(12);
+    // Pruning with a mark it cannot look at: the mark stays, and the mint stands.
+    const old: string = readdirSync(`${path}.marks`).map(Number).sort((a, b) => a - b)[0] !== undefined ? String(readdirSync(`${path}.marks`).map(Number).sort((a, b) => a - b)[0]) : '';
+    const pruning: TokenStore = new TokenStore(path, 30, (): Date => new Date(), { mark_lstat: failing('EACCES', old) });
+    await pruning.mint('kim@c/', 'kim', 'laptop');
+    expect(existsSync(join(`${path}.marks`, old))).toBe(true);
   });
 });
 

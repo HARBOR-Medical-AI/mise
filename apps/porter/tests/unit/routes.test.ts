@@ -1146,6 +1146,35 @@ describe('door tokens (chell auth)', () => {
     await door.app.close();
   });
 
+  it('a code that expires during its mint, whose drop then fails, is dropped at a later tick and leaves the standing token', async () => {
+    let release: () => void = (): void => undefined;
+    let hold: boolean = false;
+    let fail: number = 0;
+    const store: TokenStore = new TokenStore(join(tokensDir, 'held-drop.json'), 30, (): Date => new Date(), {
+      read_after: async (): Promise<void> => {
+        if (hold) { hold = false; await new Promise<void>((resolve) => { release = resolve; }); return; }
+        if (fail > 0) { fail -= 1; throw new Error('the store is busy'); }
+      },
+    });
+    let clock: number = Date.now();
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'held-drop.json') }, host, tokens: store, now: (): number => clock, sweepMs: 20, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    await door.app.ready();
+    const standing = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    const { code } = (await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } })).json() as { code: string };
+    hold = true;
+    const login = door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    // The code runs out while the mint is held, and the drop that follows fails once.
+    clock += 11 * 60 * 1000;
+    fail = 1;
+    release();
+    expect((await login).statusCode).toBe(410);
+    for (let i = 0; i < 100 && (await store.list()).length > 1; i++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect(fail).toBe(0);
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    await door.app.close();
+  });
+
   it('answers /healthz while a token login is held inside the store: store I/O does not hold the door', async () => {
     let release: () => void = (): void => undefined;
     let holding: boolean = false;
