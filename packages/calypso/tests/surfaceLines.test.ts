@@ -193,6 +193,42 @@ describe('lines in a surface\'s own language', () => {
     await mine.next((m) => m.type === 'session');
   });
 
+  it('a host command or pipeline segment for a terminal\'s line is refused at the daemon, though its browser could run one: nothing is sent to either', async () => {
+    const asked: string[] = [];
+    const hosted = new CalypsoDaemon({
+      engine: {
+        line_execute: async (line: string): Promise<CommandEnvelope[]> => {
+          if (line === 'shellme') await hosted.shell_current('ls').catch((e: Error) => asked.push(`shell: ${e.message}`));
+          if (line === 'pipeme') await hosted.pipe_current('tr a b', Buffer.from('x')).catch((e: Error) => asked.push(`pipe: ${e.message}`));
+          return [{ status: 'ok', rendered: '' }];
+        },
+        line_complete: async (prefix: string) => ({ candidates: [], prefix }),
+      },
+      token: TOKEN,
+    });
+    const hostedPort = await hosted.start();
+    try {
+      // A browser that says it can run programs: still not the surface that sent the terminal's line.
+      const browser = await client_attach(hostedPort, { claims: [], shellCommands: true, pipeSegments: true });
+      hosted.terminals_set(new Terminals({ spawn, launch: { exec: 'chell', prefixArgs: [] }, target: { identity: 'i', url: 'ws://x', token: 't' } }));
+      browser.ws.send(JSON.stringify({ type: 'terminalOpen', cols: 80, rows: 24 }));
+      const terminalId = (await browser.next((m) => m.type === 'terminalOpened')).terminalId as string;
+      const chell = await client_attach(hostedPort, { shellCommands: true, pipeSegments: true, terminal: terminalId });
+      sockets.push(browser.ws, chell.ws);
+      chell.ws.send(JSON.stringify({ type: 'execute', id: '1', line: 'shellme' }));
+      await chell.next((m) => m.type === 'result' && m.id === '1');
+      chell.ws.send(JSON.stringify({ type: 'execute', id: '2', line: 'pipeme' }));
+      await chell.next((m) => m.type === 'result' && m.id === '2');
+      expect(asked).toEqual([
+        'shell: a host command for this line would run on another surface than the one that sent it; nothing ran',
+        'pipe: a pipeline segment for this line would run on another surface than the one that sent it; nothing ran',
+      ]);
+      for (const surface of [browser, chell]) expect(surface.got.some((m) => m.type === 'shell' || m.type === 'pipe')).toBe(false);
+    } finally {
+      await hosted.stop();
+    }
+  });
+
   it('a terminal\'s chell never runs a shell, an editor or a download on the daemon host: its browser does, or refuses', async () => {
     const asked: string[] = [];
     const hosted = new CalypsoDaemon({
@@ -229,6 +265,8 @@ describe('lines in a surface\'s own language', () => {
       await chell.next((m) => m.type === 'result' && m.id === '2');
       expect(browser.got.some((m) => m.type === 'edit')).toBe(true);
       expect(chell.got.some((m) => m.type === 'edit')).toBe(false);
+      // The browser did not send the line: its edit carries no line of the chell's.
+      expect(browser.got.find((m) => m.type === 'edit')?.lineId).toBeUndefined();
       // Its questions stay with the chell, typed in the terminal.
       chell.ws.on('message', (d) => {
         const m = JSON.parse(d.toString()) as Record<string, unknown>;

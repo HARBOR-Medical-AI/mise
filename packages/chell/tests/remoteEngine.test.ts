@@ -90,6 +90,10 @@ let installedSurface: unknown = null;
 const DELIVERY_LINES: ReadonlyArray<{ line: string; intents: Array<{ verb: string; destination: string | null }> }> =
   (JSON.parse(readFileSync(new URL('../../brasa/tests/fixtures/deliveryLines.json', import.meta.url), 'utf8')) as { lines: Array<{ line: string; intents: Array<{ verb: string; destination: string | null }> }> }).lines;
 const { deliveryIntent_matches } = await import('../../brasa/dist/builtins/fs/deliveryMatch.js');
+// What a line asks to have run here: the same, from the table brasa's host-grants test holds its reader to. A line
+// that looks like one (a `!`, a pipe, an `edit` or `command` head) but is not in the table fails the test that used it.
+interface HostLine { line: string; shells: string[]; pipes: string[]; edits: string[] }
+const HOST_LINES: ReadonlyArray<HostLine> = (JSON.parse(readFileSync(new URL('../../brasa/tests/fixtures/hostLines.json', import.meta.url), 'utf8')) as { lines: HostLine[] }).lines;
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
   deliveryIntents_read: (line: string, backend: string | undefined): Array<{ verb: string; destination: string | null }> => {
     // The table is the ChRIS reader's. Any other backend has no delivering command (held in brasa's test too).
@@ -100,6 +104,11 @@ jest.unstable_mockModule('@fnndsc/brasa', () => ({
     return row?.intents ?? [];
   },
   deliveryIntent_matches,
+  lineHostOperations_read: async (line: string): Promise<{ shells: string[]; pipes: string[]; edits: string[] }> => {
+    const row: HostLine | undefined = HOST_LINES.find((one: HostLine): boolean => one.line === line);
+    if (row === undefined && /^\s*(!|edit |command )|\|/.test(line)) throw new Error(`not in the shared table: ${line}`);
+    return { shells: row?.shells ?? [], pipes: row?.pipes ?? [], edits: row?.edits ?? [] };
+  },
   sink_set: (sink: OutputSink): OutputSink => { const prev: OutputSink = activeSink; activeSink = sink; return prev; },
   sink_get: (): OutputSink => activeSink,
   surface_set: (surface: unknown): unknown => { installedSurface = surface; return surface; },
@@ -303,7 +312,7 @@ describe('RemoteEngine live output', () => {
       const id = String(sent.id);
       process.nextTick(() => {
         ws.emit('message', Buffer.from(JSON.stringify({
-          type: 'shell', shellId: 'h1', command: 'printf local',
+          type: 'shell', shellId: 'h1', command: 'printf local', lineId: id,
         })));
         ws.emit('message', Buffer.from(JSON.stringify({
           type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }],
@@ -374,20 +383,21 @@ describe('RemoteEngine live output', () => {
       const id = String(sent.id);
       process.nextTick(() => {
         ws.emit('message', Buffer.from(JSON.stringify({ type: 'prompt', promptId: 'p1', message: 'Password:', hidden: true })));
-        ws.emit('message', Buffer.from(JSON.stringify({ type: 'pipe', pipeId: 'x1', command: 'grep x', input: Buffer.from('in').toString('base64') })));
+        ws.emit('message', Buffer.from(JSON.stringify({ type: 'pipe', pipeId: 'x1', command: 'tr a b', input: Buffer.from('in').toString('base64'), lineId: id })));
         ws.emit('message', Buffer.from(JSON.stringify({ type: 'edit', editId: 'e1', content: 'text', extension: 'md' })));
         ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
       });
     };
 
     remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
-    await remote.line_execute('anything');
+    await remote.line_execute('cat x | tr a b');
     // The error replies are sent on the next ticks after the requests land.
     await new Promise((r) => setTimeout(r, 0));
 
     const sentTypes = FakeWebSocket.instances[0].sent;
     expect(sentTypes).toContainEqual(expect.objectContaining({ type: 'promptError', promptId: 'p1' }));
-    expect(sentTypes).toContainEqual(expect.objectContaining({ type: 'pipeError', pipeId: 'x1' }));
+    // The line asked for the segment, so the refusal is the surface's own inability, not a missing grant.
+    expect(sentTypes).toContainEqual(expect.objectContaining({ type: 'pipeError', pipeId: 'x1', reason: 'this surface cannot run pipeline segments' }));
     expect(sentTypes).toContainEqual(expect.objectContaining({ type: 'editError', editId: 'e1' }));
   });
 
@@ -524,33 +534,25 @@ describe('RemoteEngine live output', () => {
   it('answers pipe, edit, and close callbacks', async () => {
     let closed = false;
     scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+      if (sent.type !== 'execute') return;
       const id = String(sent.id);
       process.nextTick(() => {
-        ws.emit('message', Buffer.from(JSON.stringify({
-          type: 'pipe',
-          pipeId: 'pipe1',
-          command: 'wc -c',
-          input: Buffer.from('abc').toString('base64'),
-        })));
-        ws.emit('message', Buffer.from(JSON.stringify({
-          type: 'edit',
-          editId: 'edit1',
-          content: 'before',
-          extension: '.txt',
-        })));
-        ws.emit('message', Buffer.from(JSON.stringify({
-          type: 'deliver',
-          deliverId: 'deliver1',
-          id,
-          path: '/home/me/scan.dcm',
-          filename: 'scan.dcm',
-          destination: '/tmp',
-        })));
-        ws.emit('message', Buffer.from(JSON.stringify({
-          type: 'result',
-          id,
-          envelopes: [{ status: 'ok', rendered: '' }],
-        })));
+        if (sent.line === 'cat x | tr a b') {
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'pipe', pipeId: 'pipe1', command: 'tr a b', input: Buffer.from('abc').toString('base64'), lineId: id })));
+        } else if (sent.line === 'edit notes.txt') {
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'edit', editId: 'edit1', content: 'before', extension: '.txt', path: '/home/chris/notes.txt', lineId: id })));
+        } else {
+          ws.emit('message', Buffer.from(JSON.stringify({
+            type: 'deliver',
+            deliverId: 'deliver1',
+            id,
+            path: '/home/me/scan.dcm',
+            filename: 'scan.dcm',
+            destination: '/tmp',
+          })));
+        }
+        // After the request's reply, so the line is still in flight when it lands.
+        setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 5);
       });
     };
 
@@ -563,6 +565,8 @@ describe('RemoteEngine live output', () => {
       onDeliver: async (request) => ({ location: `/tmp/${request.filename}`, bytes: 2048 }),
       onClose: () => { closed = true; },
     });
+    await remote.line_execute('cat x | tr a b');
+    await remote.line_execute('edit notes.txt');
     await remote.line_execute('download /home/me/scan.dcm /tmp');
     remote.close();
 
@@ -839,6 +843,139 @@ describe('RemoteEngine live output', () => {
     ]));
   });
 
+  describe('a request to run something here is bound to the line that asked', () => {
+    /** A daemon that, for each line, sends the requests `requests(id)` gives, then (a tick later) the result. */
+    const daemon_play = (requests: (id: string, line: string) => Array<Record<string, unknown>>, after: (id: string) => Array<Record<string, unknown>> = () => []): void => {
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          for (const one of requests(id, String(sent.line))) ws.emit('message', Buffer.from(JSON.stringify(one)));
+          setTimeout(() => {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
+            // After the line has settled here.
+            setTimeout(() => { for (const one of after(id)) ws.emit('message', Buffer.from(JSON.stringify(one))); }, 5);
+          }, 5);
+        });
+      };
+    };
+    const reasons = (type: string): string[] => FakeWebSocket.instances[0].sent.filter((one) => one.type === type).map((one) => String(one.reason));
+
+    it('runs what the line asked for, once; refuses a request with no line, for another line, for something else, or a second time', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      const pipe = jest.fn(async (_command: string, input: Buffer): Promise<Buffer> => input);
+      daemon_play((id: string) => [
+        { type: 'shell', shellId: 's-own', command: 'ls -la', lineId: id },
+        { type: 'shell', shellId: 's-again', command: 'ls -la', lineId: id },
+        { type: 'shell', shellId: 's-none', command: 'ls -la' },
+        { type: 'shell', shellId: 's-other', command: 'ls -la', lineId: '999' },
+        { type: 'shell', shellId: 's-else', command: 'rm -rf ~', lineId: id },
+        { type: 'pipe', pipeId: 'p-else', command: 'tr a b', input: '', lineId: id },
+      ], (id: string) => [{ type: 'shell', shellId: 's-late', command: 'ls -la', lineId: id }]);
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell, onPipe: pipe });
+      await remote.line_execute('!ls -la');
+      await new Promise((r) => setTimeout(r, 20));
+      expect(shell).toHaveBeenCalledTimes(1);
+      expect(shell).toHaveBeenCalledWith('ls -la');
+      expect(pipe).not.toHaveBeenCalled();
+      const sent = FakeWebSocket.instances[0].sent;
+      expect(sent).toContainEqual({ type: 'shellResult', shellId: 's-own', exitCode: 0 });
+      const refused = (shellId: string): string => String(sent.find((one) => one.shellId === shellId && one.type === 'shellError')?.reason);
+      expect(refused('s-again')).toContain('which the line sent from here did not ask for');
+      expect(refused('s-none')).toContain('did not say which line asked for it');
+      expect(refused('s-other')).toContain('for a line that is not running here');
+      expect(refused('s-else')).toContain('"rm -rf ~", which the line sent from here did not ask for');
+      expect(refused('s-late')).toContain('for a line that is not running here');
+      expect(reasons('pipeError')).toEqual([expect.stringContaining('the pipeline segment "tr a b", which the line sent from here did not ask for')]);
+    });
+
+    it('runs a pipeline\'s segments in the engine\'s order, each once, and an edit only of the file the line named', async () => {
+      const pipe = jest.fn(async (_command: string, input: Buffer): Promise<Buffer> => input);
+      const edit = jest.fn(async (content: string) => ({ content, changed: false }));
+      daemon_play((id: string, line: string) => line === 'cat x | tr a b | tr c d'
+        ? [
+            { type: 'pipe', pipeId: 'p2', command: 'tr c d', input: '', lineId: id },
+            { type: 'pipe', pipeId: 'p1', command: 'tr a b', input: '', lineId: id },
+          ]
+        : [
+            { type: 'edit', editId: 'e-other', content: 'x', path: '/home/chris/secrets.txt', lineId: id },
+            { type: 'edit', editId: 'e-own', content: 'x', path: '/home/chris/notes.txt', lineId: id },
+            { type: 'edit', editId: 'e-again', content: 'x', path: '/home/chris/notes.txt', lineId: id },
+          ]);
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onPipe: pipe, onEdit: edit });
+      await remote.line_execute('cat x | tr a b | tr c d');
+      await remote.line_execute('edit notes.txt');
+      await new Promise((r) => setTimeout(r, 20));
+      // The second segment taken first passes the first by: it cannot be asked for after.
+      expect(pipe.mock.calls.map((call) => call[0])).toEqual(['tr c d']);
+      expect(reasons('pipeError')).toEqual([expect.stringContaining('"tr a b", which the line sent from here did not ask for')]);
+      expect(edit).toHaveBeenCalledTimes(1);
+      const editRefusals: string[] = reasons('editError');
+      expect(editRefusals).toHaveLength(2);
+      expect(editRefusals[0]).toContain('"/home/chris/secrets.txt"');
+    });
+
+    it('a cancelled line, and a closed connection, ask for nothing more', async () => {
+      const shell = jest.fn(async (_command: string): Promise<number> => 0);
+      let lineId = '';
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type === 'execute') { lineId = String(sent.id); return; }
+        if (sent.type === 'cancel') {
+          process.nextTick(() => {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: 's-cancelled', command: 'ls -la', lineId })));
+            setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id: lineId, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 5);
+          });
+        }
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shell });
+      const running: Promise<unknown> = remote.line_execute('!ls -la');
+      await new Promise((r) => setTimeout(r, 5));
+      expect(remote.line_cancel()).toBe(true);
+      await running;
+      await new Promise((r) => setTimeout(r, 5));
+      expect(shell).not.toHaveBeenCalled();
+      expect(reasons('shellError')).toEqual([expect.stringContaining('for a line that is not running here')]);
+      // A line in flight when the connection closes: its grants go with it.
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          ws.emit('close');
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: 's-closed', command: 'ls -la', lineId: id })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
+        });
+      };
+      await remote.line_execute('!ls -la');
+      await new Promise((r) => setTimeout(r, 5));
+      expect(shell).not.toHaveBeenCalled();
+      expect(reasons('shellError')).toHaveLength(2);
+    });
+
+    it('two connections with the same numeric line id share no grants', async () => {
+      const shellA = jest.fn(async (_command: string): Promise<number> => 0);
+      const shellB = jest.fn(async (_command: string): Promise<number> => 0);
+      const pending: Array<{ ws: FakeWebSocket; id: string }> = [];
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => { if (sent.type === 'execute') pending.push({ ws, id: String(sent.id) }); };
+      const a = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shellA });
+      const b = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: shellB });
+      const runningA: Promise<unknown> = a.line_execute('!ls -la');
+      const runningB: Promise<unknown> = b.line_execute('anything');
+      await new Promise((r) => setTimeout(r, 5));
+      const [lineA, lineB] = pending;
+      expect(lineA?.id).toBe(lineB?.id);
+      // The daemon names A's line id to B, with A's command: B's line asked for nothing.
+      lineB?.ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: 'cross', command: 'ls -la', lineId: lineB.id })));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(shellB).not.toHaveBeenCalled();
+      expect(lineB?.ws.sent.find((one) => one.shellId === 'cross')?.reason).toContain('which the line sent from here did not ask for');
+      for (const line of pending) line.ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id: line.id, envelopes: [{ status: 'ok', rendered: '' }] })));
+      await Promise.all([runningA, runningB]);
+      expect(shellA).not.toHaveBeenCalled();
+      a.close();
+      b.close();
+    });
+  });
+
   it('returns a pipe error when the local segment fails', async () => {
     scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
       const id: string = String(sent.id);
@@ -848,6 +985,7 @@ describe('RemoteEngine live output', () => {
           pipeId: 'pipe1',
           command: 'signalflow',
           input: Buffer.from('pipeline: test').toString('base64'),
+          lineId: id,
         })));
         ws.emit('message', Buffer.from(JSON.stringify({
           type: 'result',

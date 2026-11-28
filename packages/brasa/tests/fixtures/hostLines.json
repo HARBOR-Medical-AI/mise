@@ -1,0 +1,276 @@
+{
+  "about": "What each line asks the machine it was typed on to run (lineHostOperations_read), read with the core commands registered. brasa's host-grants test holds the reader to it; chell's remote-engine test reads it as the reader's stand-in.",
+  "lines": [
+    {
+      "line": "!printf local",
+      "shells": [
+        "printf local"
+      ],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "!ls -la",
+      "shells": [
+        "ls -la"
+      ],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "!",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "cat x | tr a b",
+      "shells": [],
+      "pipes": [
+        "tr a b"
+      ],
+      "edits": []
+    },
+    {
+      "line": "cat x |tr a b",
+      "shells": [],
+      "pipes": [
+        "tr a b"
+      ],
+      "edits": []
+    },
+    {
+      "line": "cat x | wc -l",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "cat x | grep -i foo",
+      "shells": [],
+      "pipes": [
+        "grep -i foo"
+      ],
+      "edits": []
+    },
+    {
+      "line": "cat x | grep -c -e a -e b",
+      "shells": [],
+      "pipes": [
+        "grep -c -e a -e b"
+      ],
+      "edits": []
+    },
+    {
+      "line": "cat x | grep -r foo .",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "cat x | grep foo f.txt",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "edit notes.txt",
+      "shells": [],
+      "pipes": [],
+      "edits": [
+        "notes.txt"
+      ]
+    },
+    {
+      "line": "edit /home/chris/uploads/config.yaml",
+      "shells": [],
+      "pipes": [],
+      "edits": [
+        "config.yaml"
+      ]
+    },
+    {
+      "line": "edit $F",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "edit a b",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "command ls -la",
+      "shells": [],
+      "pipes": [
+        "command ls -la"
+      ],
+      "edits": []
+    },
+    {
+      "line": "command printf '%s\\n' a",
+      "shells": [],
+      "pipes": [
+        "command printf '%s\\n' a"
+      ],
+      "edits": []
+    },
+    {
+      "line": "cat x | command tr a b",
+      "shells": [],
+      "pipes": [
+        "command tr a b"
+      ],
+      "edits": []
+    },
+    {
+      "line": "ls | tr a b | wc -l | sort",
+      "shells": [],
+      "pipes": [
+        "tr a b"
+      ],
+      "edits": []
+    },
+    {
+      "line": "!ls &",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "ls && !rm x",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "ls; !rm x",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "ls || !rm x",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "X=$(ls | tr a b)",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "cat x | tr a b > out",
+      "shells": [],
+      "pipes": [
+        "tr a b > out"
+      ],
+      "edits": []
+    },
+    {
+      "line": "ls > out",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "command ls > out",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "anything",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "download /home/me/scan.dcm /tmp",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "cat x | tr 'a b' c",
+      "shells": [],
+      "pipes": [
+        "tr 'a b' c"
+      ],
+      "edits": []
+    },
+    {
+      "line": "cat x | grep \"unclosed",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "cat x | tr $A b",
+      "shells": [],
+      "pipes": [
+        "tr $A b"
+      ],
+      "edits": []
+    },
+    {
+      "line": "command ls *.txt",
+      "shells": [],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "cat x | tr a b | tr c d",
+      "shells": [],
+      "pipes": [
+        "tr a b",
+        "tr c d"
+      ],
+      "edits": []
+    },
+    {
+      "line": "!download /a /b",
+      "shells": [
+        "download /a /b"
+      ],
+      "pipes": [],
+      "edits": []
+    },
+    {
+      "line": "ls /x | \"download\" /a ./later",
+      "shells": [],
+      "pipes": [
+        "\"download\" /a ./later"
+      ],
+      "edits": []
+    },
+    {
+      "line": "ls /x | download /a ./later",
+      "shells": [],
+      "pipes": [
+        "download /a ./later"
+      ],
+      "edits": []
+    },
+    {
+      "line": "pipeline --signalflow | signalflow",
+      "shells": [],
+      "pipes": [
+        "signalflow"
+      ],
+      "edits": []
+    },
+    {
+      "line": "!tty; read x",
+      "shells": [
+        "tty; read x"
+      ],
+      "pipes": [],
+      "edits": []
+    }
+  ]
+}

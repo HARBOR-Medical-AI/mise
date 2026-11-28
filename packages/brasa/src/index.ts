@@ -50,6 +50,7 @@ export * from './lib/parser.js';
 export * from './lib/pipe.js';
 export * from './lib/semicolonParser.js';
 export * from './builtins/fs/deliveryIntent.js';
+export { lineHostOperations_read, type LineHostOperations } from './builtins/sys/hostGrants.js';
 export { commandOperands_place } from './core/commandParse.js';
 export { privateTemp_write, suffix_safe, wireName_place, type HostPlace, type PrivateTemp } from '@fnndsc/fond';
 export * from './lib/completer/index.js';

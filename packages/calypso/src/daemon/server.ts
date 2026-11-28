@@ -1851,9 +1851,27 @@ export class CalypsoDaemon {
     if (!origin) {
       return Promise.reject(new Error('no active command to run a pipe segment for'));
     }
+    const elsewhere: string | null = this.elsewhere_refusal(origin, 'a pipeline segment');
+    if (elsewhere !== null) return Promise.reject(new Error(elsewhere));
+    const lineId: string | null = this.currentId;
     return this.pipes.open(origin.socket, (pipeId: string): void => {
-      this.send(origin.socket, { type: 'pipe', pipeId, command, input: input.toString('base64') });
+      this.send(origin.socket, { type: 'pipe', pipeId, command, input: input.toString('base64'), ...(lineId === null ? {} : { lineId }) });
     });
+  }
+
+  /**
+   * Why a request for a program on a surface's machine may not go where it would: to a surface other than the one
+   * that sent the running line (a browser holding the terminal that typed it). That surface did not send the line
+   * and has nothing to run it against, so the daemon refuses here, before anything is sent, and the line says why.
+   *
+   * @param acting - The surface the request would go to.
+   * @param what - What would run, for the words.
+   * @returns The refusal, or null when it goes to the line's own surface.
+   */
+  private elsewhere_refusal(acting: Surface, what: string): string | null {
+    const origin: Surface | null = this.currentOrigin;
+    if (origin === null || origin === acting) return null;
+    return `${what} for this line would run on another surface than the one that sent it; nothing ran`;
   }
 
   /**
@@ -1874,8 +1892,11 @@ export class CalypsoDaemon {
     if (!origin.capabilities.shellCommands) {
       return Promise.reject(new Error('this surface has no shell, and the daemon was not started with --host-control'));
     }
+    const elsewhere: string | null = this.elsewhere_refusal(origin, 'a host command');
+    if (elsewhere !== null) return Promise.reject(new Error(elsewhere));
+    const lineId: string | null = this.currentId;
     return this.shells.open(origin.socket, (shellId: string): void => {
-      this.send(origin.socket, { type: 'shell', shellId, command });
+      this.send(origin.socket, { type: 'shell', shellId, command, ...(lineId === null ? {} : { lineId }) });
     });
   }
 
@@ -1941,9 +1962,12 @@ export class CalypsoDaemon {
     if (!origin) {
       return Promise.reject(new Error('no active command to edit for'));
     }
+    // The asking line's id goes only to the surface that sent the line; a browser holding a terminal's line edits
+    // by its own route and needs none.
+    const lineId: string | null = origin === this.currentOrigin ? this.currentId : null;
     // Someone is editing: the session is free meanwhile.
     return this.person_await((): Promise<EditOutcome> => this.edits.open(origin.socket, (editId: string): void => {
-      this.send(origin.socket, { type: 'edit', editId, content, extension, ...(path === undefined ? {} : { path }) });
+      this.send(origin.socket, { type: 'edit', editId, content, extension, ...(path === undefined ? {} : { path }), ...(lineId === null ? {} : { lineId }) });
     }));
   }
 

@@ -16,8 +16,9 @@ import { serverMessage_parse, CONTRACT_VERSION, RequestBroker, type ServerMessag
 import type { CommandEnvelope } from '@fnndsc/cumin';
 import type { BrasaEngine, CompletionResult } from '@fnndsc/brasa';
 import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type FileDeliverResult } from '@fnndsc/menu';
-import { deliveryIntent_matches, deliveryIntents_read, envelope_deliver, sink_get, sink_set, surface_set, type DeliveryIntent, type OutputSink, type Surface } from '@fnndsc/brasa';
+import { deliveryIntent_matches, deliveryIntents_read, lineHostOperations_read, envelope_deliver, sink_get, sink_set, surface_set, type DeliveryIntent, type OutputSink, type Surface } from '@fnndsc/brasa';
 import { promptFromContext_render } from '../core/prompt/session.js';
+import { HostGrantBook } from './hostGrants.js';
 import { output_above } from '../core/lineDiscipline.js';
 import { terminalId_parse } from '../core/terminalId.js';
 import { HostPtyRelay, hostPtyTerminal_describe, type HostPtyDeclared, type HostPtyOutgoing, type HostPtyTerminal } from './hostPty.js';
@@ -92,6 +93,8 @@ export class RemoteEngine implements BrasaEngine {
   private readonly onDeliver: ((request: FileDeliverRequest) => Promise<FileDeliverResult>) | undefined;
   /** What each line in flight asked to have delivered here, by its request id. */
   private readonly deliveryIntents: Map<string, DeliveryIntent[]> = new Map<string, DeliveryIntent[]>();
+  /** What each line in flight asked to have run here (host commands, pipeline segments, edits), by its request id. */
+  private readonly hostGrants: HostGrantBook = new HostGrantBook();
   private readonly onClosing: ((cause: ClosingCause) => void) | undefined;
   private readonly onStale: ((stale: boolean) => void) | undefined;
   /** Hands this terminal to a program on the daemon's pty, when this chell is in one. */
@@ -197,6 +200,8 @@ export class RemoteEngine implements BrasaEngine {
           engine.hostControl = message.hostControl ?? [];
           engine.backendId = message.backend;
           ws.on('message', (payload: Buffer) => engine.message_handle(payload));
+          // A closed connection's lines ask for nothing more here.
+          ws.on('close', (): void => { engine.hostGrants.all_close(); });
           if (options.onClose) {
             ws.on('close', () => options.onClose?.());
           }
@@ -215,6 +220,8 @@ export class RemoteEngine implements BrasaEngine {
     // before the daemon sees it: a delivery is honoured only against this.
     this.deliveryIntents.set(id, deliveryIntents_read(line, this.backendId));
     try {
+      // And what it asks to have run here, read the same way: a request is run only against this, once.
+      this.hostGrants.line_open(id, await lineHostOperations_read(line));
       const envelopes: CommandEnvelope[] = await this.request<CommandEnvelope[]>('execute', { line }, id);
       // A daemon that names no status leaves the envelopes to say it.
       this.lastExit = this.resultExits.get(id) ?? (envelopes.some((envelope: CommandEnvelope): boolean => envelope.status === 'error') ? 1 : 0);
@@ -234,6 +241,7 @@ export class RemoteEngine implements BrasaEngine {
       if (this.activeExecuteId === id) this.activeExecuteId = undefined;
       this.requestSinks.delete(id);
       this.deliveryIntents.delete(id);
+      this.hostGrants.line_close(id);
       this.resultExits.delete(id);
     }
   }
@@ -254,6 +262,8 @@ export class RemoteEngine implements BrasaEngine {
   /** @inheritdoc */
   public line_cancel(): boolean {
     if (this.activeExecuteId === undefined) return false;
+    // A cancelled line asks for nothing more here, whatever the daemon still sends.
+    this.hostGrants.line_close(this.activeExecuteId);
     this.ws.send(JSON.stringify({ type: 'cancel', id: this.activeExecuteId }));
     return true;
   }
@@ -376,13 +386,13 @@ export class RemoteEngine implements BrasaEngine {
         this.output_render(message.channel, message.chunk, message.id);
         break;
       case 'pipe':
-        void this.pipe_run(message.pipeId, message.command, message.input);
+        void this.pipe_run(message.pipeId, message.command, message.input, message.lineId);
         break;
       case 'shell':
-        void this.shell_run(message.shellId, message.command);
+        void this.shell_run(message.shellId, message.command, message.lineId);
         break;
       case 'edit':
-        void this.edit_run(message.editId, message.content, message.extension);
+        void this.edit_run(message.editId, message.content, message.extension, message.lineId, message.path);
         break;
       case 'deliver':
         void this.deliver_run(message.deliverId, message.id, {
@@ -458,10 +468,14 @@ export class RemoteEngine implements BrasaEngine {
    * @param pipeId - The pipe correlation id.
    * @param command - The segment command line.
    * @param input - The base64-encoded input bytes.
+   * @param lineId - The line the daemon says is asking, by this chell's id.
    */
-  private async pipe_run(pipeId: string, command: string, input: string): Promise<void> {
+  private async pipe_run(pipeId: string, command: string, input: string, lineId: string | undefined): Promise<void> {
     const inputBytes: Buffer = Buffer.from(input, 'base64');
     try {
+      // Spent before anything runs: a segment the line sent from here did not ask for runs nothing.
+      const refusal: string | null = this.hostGrants.grant_take(lineId, { kind: 'pipe', command });
+      if (refusal !== null) throw new Error(refusal);
       if (!this.onPipe) {
         // Passing input through unchanged would silently turn the segment
         // into a no-op; an inability to run it is a failure.
@@ -481,9 +495,12 @@ export class RemoteEngine implements BrasaEngine {
    *
    * @param shellId - Correlation id for the shell request.
    * @param command - The shell command without the leading `!`.
+   * @param lineId - The line the daemon says is asking, by this chell's id.
    */
-  private async shell_run(shellId: string, command: string): Promise<void> {
+  private async shell_run(shellId: string, command: string, lineId: string | undefined): Promise<void> {
     try {
+      const refusal: string | null = this.hostGrants.grant_take(lineId, { kind: 'shell', command });
+      if (refusal !== null) throw new Error(refusal);
       if (!this.onShell) {
         throw new Error('this surface cannot run shell commands');
       }
@@ -503,9 +520,13 @@ export class RemoteEngine implements BrasaEngine {
    * @param editId - The edit correlation id.
    * @param content - The content to edit.
    * @param extension - An optional filename extension.
+   * @param lineId - The line the daemon says is asking, by this chell's id.
+   * @param path - The file the daemon names.
    */
-  private async edit_run(editId: string, content: string, extension: string | undefined): Promise<void> {
+  private async edit_run(editId: string, content: string, extension: string | undefined, lineId: string | undefined, path: string | undefined): Promise<void> {
     try {
+      const refusal: string | null = this.hostGrants.grant_take(lineId, { kind: 'edit', path });
+      if (refusal !== null) throw new Error(refusal);
       if (!this.onEdit) {
         // Returning the content unchanged would report a successful edit that
         // never happened; an inability to edit is a failure.

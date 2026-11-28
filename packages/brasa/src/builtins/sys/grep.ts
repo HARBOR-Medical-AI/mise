@@ -49,7 +49,7 @@ import { storePath_resolve } from '../utils.js';
 import { vfsDispatcher_get } from '../../core/filesystem.js';
 import { itemType_isContainer } from '../../core/itemKinds.js';
 import { command_declare, type CommandArguments, type CommandGrammar } from '../../core/commandDeclaration.js';
-import { declaredCommand_run } from '../../core/commandParse.js';
+import { commandLine_parse, declaredCommand_run, type LineParse } from '../../core/commandParse.js';
 import { listingIn_take, type ListingModel } from '../../core/listing.js';
 import { answerKinds_get } from '../../core/answerKinds.js';
 import { surface_get } from '../../core/surface.js';
@@ -58,6 +58,7 @@ import {
   handle_word, numberedFooter_render, type AnswerRow, type NumberedHandle,
 } from '../../session/answer.js';
 import { exitCode_set } from '../../core/handlerRun.js';
+import type { ShellWord } from '../../lib/parser.js';
 
 /**
  * What a grep line asks of a match: the flags that decide which lines (or
@@ -614,6 +615,60 @@ function listingLayout_refuse(layout: GrepLayout): CommandEnvelope | null {
   return envelope_error('', undefined, `grep ${refused.flag}: ${refused.why}\n`);
 }
 
+/** What a grep line asks of a match, and how it writes what it kept. */
+interface GrepLine {
+  /** What it asks of a match. */
+  ask: GrepAsk;
+  /** How it writes what it kept. */
+  layout: GrepLayout;
+}
+
+/**
+ * What a typed grep line asks and how it writes: one reading, for the run and for a reader that must know what the
+ * run would hand to the host's grep.
+ *
+ * @param args - The parsed line.
+ * @returns Its ask and layout.
+ */
+function grepLine_read(args: CommandArguments<typeof GREP_GRAMMAR>): GrepLine {
+  const given: string[] = args.options.regexp;
+  const pattern: string | undefined = args.operands.pattern;
+  return {
+    ask: {
+      insensitive: args.options.insensitive, invert: args.options.invert, word: args.options.word,
+      extended: args.options.extended, fixed: args.options.fixed, count: args.options.count,
+      patterns: given.length > 0 ? given : pattern === undefined ? [] : [pattern],
+    },
+    layout: {
+      lineNumber: args.options.lineNumber, filesWithMatches: args.options.filesWithMatches, onlyMatching: args.options.onlyMatching,
+      noFilename: args.options.noFilename, withFilename: args.options.withFilename, recursive: args.options.recursive,
+      after: args.options.after, before: args.options.before, context: args.options.context, color: args.options.color,
+    },
+  };
+}
+
+/**
+ * The line a grep segment would hand to the host's grep, when it filters piped text there (`text_grep`): rendered
+ * from the segment's own words by the run's own reading and rendering, so it is exactly what the engine would
+ * send. Null when the segment would not (files named, recursive, no pattern) or the line does not parse.
+ *
+ * @param words - The words after `grep`, as the engine tokenizes them.
+ * @returns The host line, or null.
+ *
+ * @example
+ * ```ts
+ * await grepHostLine_read(shellWords_tokenize('-i t1')); // 'grep -i t1'
+ * ```
+ */
+export async function grepHostLine_read(words: readonly ShellWord[]): Promise<string | null> {
+  const parsed: LineParse = await commandLine_parse(grepCommand, words);
+  if (!parsed.ok) return null;
+  const args: CommandArguments<typeof GREP_GRAMMAR> = parsed.args as unknown as CommandArguments<typeof GREP_GRAMMAR>;
+  const { ask, layout } = grepLine_read(args);
+  if (ask.patterns.length === 0 || args.operands.files.length > 0 || layout.recursive) return null;
+  return grepLine_render(ask, layout);
+}
+
 /**
  * The typed grep line run: the files named (or walked under -r), else a
  * piped listing, else piped text, else the held listing.
@@ -622,19 +677,8 @@ function listingLayout_refuse(layout: GrepLayout): CommandEnvelope | null {
  * @returns The envelope.
  */
 async function grep_run(args: CommandArguments<typeof GREP_GRAMMAR>): Promise<CommandEnvelope> {
-  const given: string[] = args.options.regexp;
-  const pattern: string | undefined = args.operands.pattern;
   const files: string[] = args.operands.files;
-  const ask: GrepAsk = {
-    insensitive: args.options.insensitive, invert: args.options.invert, word: args.options.word,
-    extended: args.options.extended, fixed: args.options.fixed, count: args.options.count,
-    patterns: given.length > 0 ? given : pattern === undefined ? [] : [pattern],
-  };
-  const layout: GrepLayout = {
-    lineNumber: args.options.lineNumber, filesWithMatches: args.options.filesWithMatches, onlyMatching: args.options.onlyMatching,
-    noFilename: args.options.noFilename, withFilename: args.options.withFilename, recursive: args.options.recursive,
-    after: args.options.after, before: args.options.before, context: args.options.context, color: args.options.color,
-  };
+  const { ask, layout } = grepLine_read(args);
   if (ask.patterns.length === 0) return envelope_error('', undefined, 'grep: a pattern to keep: grep [-ivwEFc] [-e PATTERN] PATTERN\n');
   const piped: ListingModel | null = listingIn_take();
   if (piped !== null && files.length === 0) {

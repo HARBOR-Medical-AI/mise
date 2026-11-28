@@ -891,6 +891,8 @@ describe('CalypsoDaemon pipe segments over the wire', () => {
       const pipe = await asked;
       expect(pipe.type).toBe('pipe');
       expect(pipe.command).toBe('grep foo');
+      // Named by the line that asked, in the surface's own id for it.
+      expect(pipe.lineId).toBe('1');
       expect(Buffer.from(pipe.input as string, 'base64').toString('utf-8')).toBe('input');
 
       const replied = message_next(ws);
@@ -961,7 +963,7 @@ describe('CalypsoDaemon shell commands over the wire', () => {
       const asked: Promise<Record<string, unknown>> = message_next(ws);
       send(ws, { type: 'execute', id: '1', line: '!pwd' });
       const shell: Record<string, unknown> = await asked;
-      expect(shell).toEqual(expect.objectContaining({ type: 'shell', command: 'pwd' }));
+      expect(shell).toEqual(expect.objectContaining({ type: 'shell', command: 'pwd', lineId: '1' }));
 
       const replied: Promise<Record<string, unknown>> = message_next(ws);
       send(ws, { type: 'shellResult', shellId: shell.shellId as string, exitCode: 0 });

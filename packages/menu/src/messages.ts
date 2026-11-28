@@ -886,6 +886,12 @@ export const pipeMessageSchema = z.object({
   pipeId: z.string(),
   command: z.string(),
   input: z.string(),
+  /**
+   * The surface's own id for the line whose command asks for this, set when the request goes to the surface that
+   * sent that line. A surface on another machine runs it only against what that line asked for; absent (an older
+   * daemon, or a request for another surface's line) it runs nothing.
+   */
+  lineId: z.string().optional(),
 });
 
 /** Asks the surface to run a shell command on its own machine, never on the daemon host. */
@@ -893,6 +899,12 @@ export const shellMessageSchema = z.object({
   type: z.literal('shell'),
   shellId: z.string(),
   command: z.string(),
+  /**
+   * The surface's own id for the line whose command asks for this, set when the request goes to the surface that
+   * sent that line. A surface on another machine runs it only against what that line asked for; absent (an older
+   * daemon, or a request for another surface's line) it runs nothing.
+   */
+  lineId: z.string().optional(),
 });
 
 /**
@@ -906,6 +918,12 @@ export const editMessageSchema = z.object({
   extension: z.string().optional(),
   /** The file being edited, so an editor that stays open knows where its saves go. */
   path: z.string().optional(),
+  /**
+   * The surface's own id for the line whose command asks for this, set when the request goes to the surface that
+   * sent that line. A surface on another machine runs it only against what that line asked for; absent (an older
+   * daemon, or a request for another surface's line) it runs nothing.
+   */
+  lineId: z.string().optional(),
 });
 
 /**
