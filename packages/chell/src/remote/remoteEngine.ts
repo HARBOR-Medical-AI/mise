@@ -18,7 +18,7 @@ import type { BrasaEngine, CompletionResult } from '@fnndsc/brasa';
 import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type FileDeliverResult } from '@fnndsc/menu';
 import { builtinCommand_has, coreCommand_has, deliveryIntents_read, lineHostOperations_read, sourceIntents_settle, envelope_deliver, sink_get, sink_set, surface_set, type EngineRuns, type WordRoute, type LineHostOperations, type OutputSink, type Surface } from '@fnndsc/brasa';
 import type { LocalEditResult } from '@fnndsc/menu/surface';
-import { HeldOutput } from './heldOutput.js';
+import { HeldOutput, closedMessage_settles } from './heldOutput.js';
 import { HostConsent, type ConsentAsk } from './hostConsent.js';
 import { HostDesk, type HostDeskOptions } from './hostDesk.js';
 import { promptFromContext_render } from '../core/prompt/session.js';
@@ -171,7 +171,7 @@ export class RemoteEngine implements BrasaEngine {
     this.hold = new HeldOutput({
       question_isOpen: (): boolean => this.consent.question_isOpen(),
       message_handle: (payload: Buffer): void => { this.message_handle(payload, true); },
-      overflow_answer: (raw: unknown): boolean => this.overflow_answer(raw),
+      overflow_answer: (raw: unknown): boolean => this.desk.overflow_answer(raw),
     });
     this.consent.idle_set((): void => { this.hold.items_flush(); });
     this.desk = new HostDesk({
@@ -201,32 +201,6 @@ export class RemoteEngine implements BrasaEngine {
    */
   public hostRequests_allAllowed(): boolean {
     return this.consent.all_isAllowed();
-  }
-
-  /**
-   * Answers a message that cannot wait past the hold's bound: the session's question is refused, a hand-over
-   * refused, a program's end taken now; anything else may be dropped.
-   *
-   * @param raw - The parsed message.
-   * @returns True when it was answered; false when it may be dropped.
-   */
-  private overflow_answer(raw: unknown): boolean {
-    const held: object = typeof raw === 'object' && raw !== null ? raw : {};
-    const type: unknown = Reflect.get(held, 'type');
-    const promptId: unknown = Reflect.get(held, 'promptId');
-    const ptyId: unknown = Reflect.get(held, 'ptyId');
-    if (type === 'prompt' && typeof promptId === 'string') {
-      this.ws.send(JSON.stringify({ type: 'promptError', promptId, reason: 'this terminal is answering another question' }));
-    } else if (type === 'hostPtyStart' && typeof ptyId === 'string') {
-      this.desk.pty_forget(ptyId);
-      this.ws.send(JSON.stringify({ type: 'hostPtyRefuse', ptyId, reason: 'refused: this terminal is answering another question; nothing was handed over' }));
-    } else if (type === 'hostPtyExit' && typeof ptyId === 'string') {
-      this.hostPty?.exit(ptyId);
-      this.desk.pty_end(ptyId);
-    } else {
-      return false;
-    }
-    return true;
   }
 
   /**
@@ -368,24 +342,6 @@ export class RemoteEngine implements BrasaEngine {
   }
 
   /**
-   * Claims a hand-over the session asks for, on receipt: a valid request only, each id once; a refused claim is
-   * answered now.
-   *
-   * @param raw - The parsed message.
-   * @returns False when it was refused (and is not handled further).
-   */
-  private ptyStart_claim(raw: unknown): boolean {
-    if (typeof raw !== 'object' || raw === null || Reflect.get(raw, 'type') !== 'hostPtyStart') return true;
-    const parsed = serverMessage_parse(raw);
-    if (!parsed.ok || parsed.value?.type !== 'hostPtyStart') return true;
-    const ptyId: string = parsed.value.ptyId;
-    const refusal: string | null = this.desk.pty_claim(ptyId);
-    if (refusal === null) return true;
-    this.ws.send(JSON.stringify({ type: 'hostPtyRefuse', ptyId, reason: refusal }));
-    return false;
-  }
-
-  /**
    * Whether the connection has closed (read afresh: it closes while a question waits).
    *
    * @returns True once it has.
@@ -497,13 +453,14 @@ export class RemoteEngine implements BrasaEngine {
    */
   private message_handle(payload: Buffer, fromHold: boolean = false): void {
     const raw: unknown = safeJson_parse(payload.toString());
-    // A hand-over is claimed once, when it is received (before it may be held), so the program's end, which is never
-    // held, cancels it; a claim refused is answered at once.
-    if (!fromHold && !this.ptyStart_claim(raw)) return;
+    const parsed = serverMessage_parse(raw);
+    // A hand-over is claimed once, when it is received, bound to its line (before it may be held), so the program's
+    // end, which is never held, cancels it; a claim refused is answered at once, and a malformed one is not held.
+    const start: boolean = typeof raw === 'object' && raw !== null && Reflect.get(raw, 'type') === 'hostPtyStart';
+    if (!fromHold && start && parsed.ok && parsed.value?.type === 'hostPtyStart' && !this.desk.pty_receive(parsed.value)) return;
     // While a question is put to the person, the terminal is the question's: what the session says waits, except
     // a line's end (which answers its questions) and its requests (which wait their own turn).
-    if (this.hold.message_take(payload, raw)) return;
-    const parsed = serverMessage_parse(raw);
+    if (!(start && !parsed.ok) && this.hold.message_take(payload, raw)) return;
     if (!parsed.ok || parsed.value === undefined) {
       // A well-formed message of a type this client does not know is a
       // newer daemon speaking a wider vocabulary — the open-world rule says
@@ -527,6 +484,8 @@ export class RemoteEngine implements BrasaEngine {
       return;
     }
     const message: ServerMessage = parsed.value;
+    // From the moment the connection closes, nothing more is shown: only what settles a call or answers a request.
+    if (this.closed && !closedMessage_settles(message.type)) return;
     switch (message.type) {
       case 'result':
         if (message.exitCode !== undefined) this.resultExits.set(message.id, message.exitCode);

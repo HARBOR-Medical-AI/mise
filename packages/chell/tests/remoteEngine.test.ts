@@ -1319,10 +1319,11 @@ describe('RemoteEngine live output', () => {
       await new Promise((r) => setTimeout(r, 10));
       // The hold filled to just short of its bound, so the hand-over is the one past it.
       ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'none', data: 'x'.repeat(1024 * 1024 - 60) })));
-      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p8', lineId: '1', command: 'vi' })));
+      const lineId = String(ws.sent.find((one) => one.type === 'execute')?.id);
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p8', lineId, command: 'vi' })));
       (answer_give as unknown as (typed: string) => void)('n');
       await running;
-      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p8', lineId: '1', command: 'vi' })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p8', lineId, command: 'vi' })));
       const refusals = ws.sent.filter((one) => one.type === 'hostPtyRefuse' && one.ptyId === 'p8').map((one) => String(one.reason));
       expect(refusals).toEqual([expect.stringContaining('answering another question'), expect.stringContaining('again')]);
     });
@@ -1352,6 +1353,110 @@ describe('RemoteEngine live output', () => {
       await running;
       expect(state.raws).toBe(1);
       expect(written).toEqual(['SCREEN ', 'PROMPT']);
+    });
+
+    /** A daemon that asks a host command for `play build.sh` and otherwise waits; results are sent by the test. */
+    const asksThenWaits = (ids: string[]) => (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+      if (sent.type !== 'execute') return;
+      const id = String(sent.id);
+      ids.push(id);
+      if (sent.line === 'play build.sh') process.nextTick(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: `${id}-0`, command: 'make', lineId: id }))); });
+    };
+    const result_send = (ws: FakeWebSocket, id: string): void => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); };
+
+    it('a hand-over is bound to its line when it arrives: a line that starts running while it is held does not get it', async () => {
+      const { terminal, state } = terminal_make();
+      let answer_give: ((typed: string) => void) | null = null;
+      const onConsent = (_question: string): Promise<string> => new Promise<string>((resolve) => { answer_give = resolve; });
+      const ids: string[] = [];
+      scenario = asksThenWaits(ids);
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: async (): Promise<number> => 0, consentAsk: onConsent, terminal });
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket;
+      const first: Promise<unknown> = remote.line_execute('play build.sh');
+      await new Promise((r) => setTimeout(r, 10));
+      // Named for the next line, before that line is sent.
+      const next: string = String(Number(ids[0]) + 1);
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'early', lineId: next, command: 'tty; read x' })));
+      const second: Promise<unknown> = remote.line_execute('!tty; read x');
+      await new Promise((r) => setTimeout(r, 10));
+      expect(ids[1]).toBe(next);
+      (answer_give as unknown as (typed: string) => void)('n');
+      await new Promise((r) => setTimeout(r, 10));
+      result_send(ws, ids[0] as string);
+      result_send(ws, next);
+      await Promise.all([first, second]);
+      expect(state.raws).toBe(0);
+      expect(ws.sent.find((one) => one.type === 'hostPtyRefuse' && one.ptyId === 'early')?.reason).toContain('not running here');
+    });
+
+    it('a hand-over that names no line is refused when it arrives while more than one line runs', async () => {
+      const { terminal, state } = terminal_make();
+      const ids: string[] = [];
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => { if (sent.type === 'execute') ids.push(String(sent.id)); };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: async (): Promise<number> => 0, terminal });
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket;
+      const both: Array<Promise<unknown>> = [remote.line_execute('!tty; read x'), remote.line_execute('pwd')];
+      await new Promise((r) => setTimeout(r, 10));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'legacy', command: 'tty; read x' })));
+      for (const id of ids) result_send(ws, id);
+      await Promise.all(both);
+      expect(state.raws).toBe(0);
+      expect(ws.sent.find((one) => one.type === 'hostPtyRefuse' && one.ptyId === 'legacy')?.reason).toContain('not exactly one line is running');
+    });
+
+    it('a malformed hand-over at the hold\'s bound does not cancel a valid one already received with the same id', async () => {
+      const { terminal, written, state } = terminal_make();
+      let answer_give: ((typed: string) => void) | null = null;
+      const onConsent = (_question: string): Promise<string> => new Promise<string>((resolve) => { answer_give = resolve; });
+      const ids: string[] = [];
+      scenario = asksThenWaits(ids);
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: async (): Promise<number> => 0, consentAsk: onConsent, terminal });
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket;
+      const first: Promise<unknown> = remote.line_execute('play build.sh');
+      const second: Promise<unknown> = remote.line_execute('!tty; read x');
+      await new Promise((r) => setTimeout(r, 10));
+      const line: string = ids[1] as string;
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p7', lineId: line, command: 'tty; read x' })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'p7', data: 'EARLY' })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyData', ptyId: 'none', data: 'x'.repeat(1024 * 1024 - 200) })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p7', lineId: line, command: 'tty; read x', __malformed: true })));
+      (answer_give as unknown as (typed: string) => void)('n');
+      await new Promise((r) => setTimeout(r, 10));
+      expect(state.raws).toBe(1);
+      expect(written).toEqual(['EARLY']);
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyExit', ptyId: 'p7', code: 0 })));
+      for (const id of ids) result_send(ws, id);
+      await Promise.all([first, second]);
+      errors.mockRestore();
+      expect(ws.sent.filter((one) => one.type === 'hostPtyRefuse')).toEqual([]);
+    });
+
+    it('from the moment it closes, a connection shows nothing more: no output, no session broadcast, no note', async () => {
+      const shown: string[] = [];
+      const recording = { data_write: (text: string): void => { shown.push(text); }, err_write: (text: string): void => { shown.push(text); }, status_write: (): void => undefined, progress_write: (): void => undefined };
+      const onSession = jest.fn();
+      const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const stdout = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onSession });
+      const { sink_set: sinkInstall } = await import('@fnndsc/brasa');
+      sinkInstall(recording as never);
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket;
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'output', channel: 'data', chunk: 'before' })));
+      remote.close();
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'output', channel: 'data', chunk: 'after' })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'session', surface: 'abcdef', envelope: { status: 'ok', rendered: 'late' } })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'consoleNote', text: 'late note' })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'from-the-future' })));
+      await new Promise((r) => setTimeout(r, 10));
+      const notes: string[] = errors.mock.calls.map((call) => String(call[0]));
+      const printed: string[] = stdout.mock.calls.map((call) => String(call[0]));
+      errors.mockRestore();
+      stdout.mockRestore();
+      expect(shown).toEqual(['before']);
+      expect(onSession).not.toHaveBeenCalled();
+      expect(printed.join('')).not.toContain('late note');
+      expect(notes.join('')).not.toContain('from-the-future');
     });
 
     it('a failed line is shown only once an open question closes', async () => {

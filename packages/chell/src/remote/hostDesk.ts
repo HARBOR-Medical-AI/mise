@@ -98,6 +98,8 @@ export class HostDesk {
   private readonly ptyPending: Set<string> = new Set();
   /** Of those, the ones that ended before they were handed it: never handed it. */
   private readonly ptyEnded: Set<string> = new Set();
+  /** The line each of those was bound to when it was received. */
+  private readonly ptyLine: Map<string, string> = new Map();
   /** What each of those wrote before it was handed the terminal, bounded, shown once it is (dropped if it is not). */
   private readonly ptyEarly: Map<string, EarlyOutput> = new Map();
   /** The hand-back of the terminal for each program it is handed to. */
@@ -147,8 +149,11 @@ export class HostDesk {
       this.ptyPending.clear();
       this.ptyEnded.clear();
       this.ptyEarly.clear();
+      this.ptyLine.clear();
     }
     for (const one of lines) {
+      // A hand-over received for the line and not yet made ends with it.
+      for (const [ptyId, bound] of this.ptyLine) if (bound === one) this.pty_end(ptyId);
       this.intents.delete(one);
       this.written.delete(one);
       this.grants.line_close(one);
@@ -297,13 +302,7 @@ export class HostDesk {
    */
   public async hostPty_start(ptyId: string, lineId: string | undefined, command: string | undefined): Promise<void> {
     try {
-      // Claimed on receipt by the engine (once per id); a hand-over asked of the desk directly is claimed here.
-      if (!this.ptyPending.has(ptyId) && !this.ptyEnded.has(ptyId)) {
-        const unclaimed: string | null = this.pty_claim(ptyId);
-        if (unclaimed !== null) throw new Error(unclaimed);
-      }
-      if (this.ptyEnded.delete(ptyId)) throw new Error('refused: the program ended before it was handed the terminal; nothing was handed over');
-      if (this.options.hostPty === null) throw new Error('refused: this chell has no terminal to hand over; nothing was handed over');
+      const relay: HostPtyRelay = this.ptyStart_check(ptyId, lineId);
       if (command === undefined) throw new Error('refused: the session asked to hand this terminal to a program it did not name; nothing was handed over');
       // Granted, the terminal is handed over at once (the program's first output follows straight after);
       // only a request no grant covers waits for the person.
@@ -314,27 +313,62 @@ export class HostDesk {
       if (line === undefined) throw new Error(refusal ?? 'refused: no line');
       // A program that ended while its hand-over waited is not handed the terminal.
       if (this.ptyEnded.delete(ptyId) || !this.ptyPending.delete(ptyId)) throw new Error('refused: the program ended before it was handed the terminal; nothing was handed over');
-      // The terminal is handed over only when it is free (after any question or command holding it), and stays the
-      // program's until it ends or its line does.
-      const terminal_release: (() => void) | null = this.options.owner.terminal_tryTake('pty');
-      if (terminal_release === null) throw new Error('refused: this terminal is held (a question, a command or another program has it); nothing was handed over');
-      if (!this.grants.line_has(line)) {
-        terminal_release();
-        throw new Error('refused: the line has ended; nothing was handed over');
-      }
-      this.ptyRelease.set(ptyId, terminal_release);
-      this.ptyByLine.set(line, ptyId);
-      this.options.hostPty.start(ptyId);
-      this.early_show(ptyId, this.options.hostPty);
+      this.terminal_handOver(ptyId, line, relay);
     } catch (error: unknown) {
       const reason: string = reason_read(error);
       this.ptyPending.delete(ptyId);
       this.ptyEarly.delete(ptyId);
+      this.ptyLine.delete(ptyId);
       this.options.notice_show(chalk.red(`[!] ${reason}`));
       this.options.message_send({ type: 'hostPtyRefuse', ptyId, reason });
     } finally {
       this.ptyEnded.delete(ptyId);
     }
+  }
+
+  /**
+   * What must hold before a hand-over is considered: claimed (here, if the engine did not), not ended, still bound to
+   * the line it was received for (which still runs), and a terminal to hand.
+   *
+   * @param ptyId - The program's id.
+   * @param lineId - The line the session names.
+   * @returns The relay the terminal would be handed through.
+   * @throws {Error} When any does not hold.
+   */
+  private ptyStart_check(ptyId: string, lineId: string | undefined): HostPtyRelay {
+    // Claimed on receipt by the engine (once per id); a hand-over asked of the desk directly is claimed here.
+    if (!this.ptyPending.has(ptyId) && !this.ptyEnded.has(ptyId)) {
+      const unclaimed: string | null = this.pty_claim(ptyId, lineId);
+      if (unclaimed !== null) throw new Error(unclaimed);
+    }
+    if (this.ptyEnded.delete(ptyId)) throw new Error('refused: the program ended before it was handed the terminal; nothing was handed over');
+    // Bound on receipt: the line it was received for must still be the one it asks for, and still running.
+    const bound: string | undefined = this.ptyLine.get(ptyId);
+    if (bound === undefined || bound !== (lineId ?? this.line_effective(undefined)) || !this.grants.line_has(bound)) throw new Error('refused: the line the session asked for this hand-over is not the one it was received for, or has ended; nothing was handed over');
+    if (this.options.hostPty === null) throw new Error('refused: this chell has no terminal to hand over; nothing was handed over');
+    return this.options.hostPty;
+  }
+
+  /**
+   * Hands the terminal to a program, only when it is free (after any question or command holding it) and its line
+   * still runs; it stays the program's until it ends or its line does, and what it wrote meanwhile is shown.
+   *
+   * @param ptyId - The program's id.
+   * @param line - Its line.
+   * @param relay - The relay.
+   * @throws {Error} When the terminal is held or the line has ended.
+   */
+  private terminal_handOver(ptyId: string, line: string, relay: HostPtyRelay): void {
+    const terminal_release: (() => void) | null = this.options.owner.terminal_tryTake('pty');
+    if (terminal_release === null) throw new Error('refused: this terminal is held (a question, a command or another program has it); nothing was handed over');
+    if (!this.grants.line_has(line)) {
+      terminal_release();
+      throw new Error('refused: the line has ended; nothing was handed over');
+    }
+    this.ptyRelease.set(ptyId, terminal_release);
+    this.ptyByLine.set(line, ptyId);
+    relay.start(ptyId);
+    this.early_show(ptyId, relay);
   }
 
   /**
@@ -361,22 +395,77 @@ export class HostDesk {
    * it comes first, cancels it, and what it writes meanwhile is kept for it.
    *
    * @param ptyId - The program's id.
-   * @returns Null when claimed; the refusal when the id was answered before (or the connection has had its fill).
+   * @param lineId - The line the session names, or none (an older daemon: the sole line running).
+   * @returns Null when claimed; the refusal when the id was answered before, or no running line is the one asked for.
    *
    * @example
    * ```ts
-   * const refusal: string | null = desk.pty_claim('p1');
+   * const refusal: string | null = desk.pty_claim('p1', '3');
    * ```
    */
-  public pty_claim(ptyId: string): string | null {
+  public pty_claim(ptyId: string, lineId: string | undefined): string | null {
     try {
       this.id_take('pty', ptyId);
     } catch (error: unknown) {
       return reason_read(error);
     }
+    // Bound now to the line it names (running now), or to the sole running line: never to a line that runs later.
+    const line: string | undefined = this.line_effective(lineId);
+    if (line === undefined) return lineId !== undefined ? 'refused: the session asked to hand this terminal over for a line that is not running here; nothing was handed over' : 'refused: the session asked to hand this terminal over without naming its line, and not exactly one line is running here; nothing was handed over';
+    this.ptyLine.set(ptyId, line);
     this.ptyPending.add(ptyId);
     this.ptyEarly.set(ptyId, { chunks: [], bytes: 0, cut: false });
     return null;
+  }
+
+  /**
+   * Receives a hand-over the session asks for: claimed and bound to its line now, or refused now.
+   *
+   * @param message - The (valid) request.
+   * @returns False when it was refused (and is not handled further).
+   *
+   * @example
+   * ```ts
+   * if (!desk.pty_receive(message)) return;
+   * ```
+   */
+  public pty_receive(message: PtyStartAsk): boolean {
+    const refusal: string | null = this.pty_claim(message.ptyId, message.lineId);
+    if (refusal === null) return true;
+    this.options.message_send({ type: 'hostPtyRefuse', ptyId: message.ptyId, reason: refusal });
+    return false;
+  }
+
+  /**
+   * Answers a message that cannot wait past the hold's bound: the session's question is refused, a hand-over (one
+   * this frame claimed on receipt; a malformed or refused one never reaches the hold) refused and forgotten, a
+   * program's end taken now; anything else may be dropped.
+   *
+   * @param raw - The parsed message.
+   * @returns True when it was answered; false when it may be dropped.
+   *
+   * @example
+   * ```ts
+   * hold = new HeldOutput({ ..., overflow_answer: (raw) => desk.overflow_answer(raw) });
+   * ```
+   */
+  public overflow_answer(raw: unknown): boolean {
+    const held: object = typeof raw === 'object' && raw !== null ? raw : {};
+    const type: unknown = Reflect.get(held, 'type');
+    const promptId: unknown = Reflect.get(held, 'promptId');
+    const ptyId: unknown = Reflect.get(held, 'ptyId');
+    if (type === 'prompt' && typeof promptId === 'string') {
+      this.options.message_send({ type: 'promptError', promptId, reason: 'this terminal is answering another question' });
+    } else if (type === 'hostPtyStart' && typeof ptyId === 'string') {
+      this.pty_forget(ptyId);
+      this.options.message_send({ type: 'hostPtyRefuse', ptyId, reason: 'refused: this terminal is answering another question; nothing was handed over' });
+    } else if (type === 'hostPtyExit' && typeof ptyId === 'string') {
+      this.options.hostPty?.exit(ptyId);
+      this.pty_end(ptyId);
+    } else {
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -432,6 +521,7 @@ export class HostDesk {
     this.ptyPending.delete(ptyId);
     this.ptyEnded.delete(ptyId);
     this.ptyEarly.delete(ptyId);
+    this.ptyLine.delete(ptyId);
   }
 
   /**
@@ -448,6 +538,7 @@ export class HostDesk {
     // Received and not yet handed over: it never will be, and what it wrote is not shown.
     if (this.ptyPending.delete(ptyId)) this.ptyEnded.add(ptyId);
     this.ptyEarly.delete(ptyId);
+    this.ptyLine.delete(ptyId);
     this.ptyRelease.get(ptyId)?.();
     this.ptyRelease.delete(ptyId);
   }
@@ -585,6 +676,14 @@ export class HostDesk {
  */
 function text_quote(text: string): string {
   return consentText_quote(text);
+}
+
+/** A hand-over the session asks for, as received. */
+interface PtyStartAsk {
+  /** The program's id. */
+  ptyId: string;
+  /** The line it names, or none (an older daemon). */
+  lineId?: string;
 }
 
 /** The most a program may write before it is handed the terminal and still have it shown. */

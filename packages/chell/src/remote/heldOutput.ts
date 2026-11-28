@@ -142,7 +142,8 @@ export class HeldOutput {
       if (typeof item === 'string') this.notice_show(item);
       else this.options.message_handle(item);
     }
-    if (this.closed) return;
+    // The note that some was dropped is itself held while a question has opened again.
+    if (this.closed || this.options.question_isOpen()) return;
     if (this.dropped) {
       this.dropped = false;
       console.error(chalk.yellow('[!] some of the session\'s output while the question was open was more than this chell holds, and was not shown'));
@@ -173,6 +174,25 @@ const HELD_ITEMS_MAX: number = 4096;
 
 /** Messages that are never held while a question is open: a line's end, requests (which queue their own), a program's end. */
 const HELD_PASSES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'shell', 'pipe', 'edit', 'deliver', 'hostPtyExit']);
+
+/** What is still handled once the connection is closing: what settles a waiting call, or answers a request (no). */
+const CLOSED_SETTLES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'shell', 'pipe', 'edit', 'deliver', 'prompt', 'hostPtyStart', 'hostPtyExit']);
+
+/**
+ * Whether a message of the session's is still handled once its connection is closing: one that settles a call or
+ * answers a request; nothing that would be shown.
+ *
+ * @param type - The message's type.
+ * @returns True when it is still handled.
+ *
+ * @example
+ * ```ts
+ * if (closed && !closedMessage_settles(message.type)) return;
+ * ```
+ */
+export function closedMessage_settles(type: string): boolean {
+  return CLOSED_SETTLES.has(type);
+}
 
 /**
  * Whether a message of the session's goes through while a question is open.
