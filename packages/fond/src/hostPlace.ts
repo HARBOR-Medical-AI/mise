@@ -190,9 +190,10 @@ export interface PrivateTemp {
  * ```
  */
 export function privateTemp_write(prefix: string, name: string, data: unknown): PrivateTemp {
-  if (!PRIVATE_NAME.test(name)) throw new Error(`a private temporary file's name is a plain name: ${JSON.stringify(name)}`);
+  // Each checked as the string it must be before anything is made: a test coerces, a name that is not a string is not one.
+  if (typeof name !== 'string' || !PRIVATE_NAME.test(name)) throw new Error(`a private temporary file's name is a plain name: ${JSON.stringify(name)}`);
   if (typeof data !== 'string' && !(data instanceof Uint8Array)) throw new Error('a private temporary file holds text or bytes');
-  if (!PRIVATE_PREFIX.test(prefix)) throw new Error(`a private temporary folder's prefix is a plain name: ${JSON.stringify(prefix)}`);
+  if (typeof prefix !== 'string' || !PRIVATE_PREFIX.test(prefix)) throw new Error(`a private temporary folder's prefix is a plain name: ${JSON.stringify(prefix)}`);
   const folder: string = mkdtempSync(path.join(tmpdir(), prefix));
   const file: string = path.join(folder, name);
   try {

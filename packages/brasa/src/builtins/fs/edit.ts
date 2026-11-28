@@ -161,13 +161,28 @@ async function edit_run(named: string): Promise<CommandEnvelope> {
   } catch (error: unknown) {
     result = { success: false, error: error instanceof Error ? error.message : String(error) };
   }
+  // A replacement was attempted (it deletes the original before it uploads), so the folder's listing is stale by
+  // both its names, saved or not: where the store keeps it, and the path the file was reached by. A listing that
+  // cannot be refreshed never hides where a failed save's edit is kept.
+  await listings_invalidate(target, named);
   if (!result.success) return editSave_fail(result.error, tmpPath);
-  // Saved: the copy goes; then the folder's listing is stale by both its names: where the store keeps it, and the
-  // path the file was reached by.
   temp.folder_remove();
-  listCache_get().cache_invalidate(posix.dirname(target));
-  listCache_get().cache_invalidate(posix.dirname(await path_resolve(named)));
   return envelope_ok(`${chalk.green(`Saved: ${named}`)}\n`);
+}
+
+/**
+ * Drops the cached listings of a file's folder, by the store's path and by the path it was reached by.
+ *
+ * @param target - The store's path.
+ * @param named - The path as typed.
+ */
+async function listings_invalidate(target: string, named: string): Promise<void> {
+  try {
+    listCache_get().cache_invalidate(posix.dirname(target));
+    listCache_get().cache_invalidate(posix.dirname(await path_resolve(named)));
+  } catch {
+    // A stale listing is read again on its own time; the edit's outcome is what is said.
+  }
 }
 
 /**

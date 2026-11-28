@@ -123,6 +123,12 @@ describe('privateTemp_write, a write that fails', () => {
     const huge = { length: 1 } as unknown as Uint8Array;
     expect(() => privateTemp_write(prefix, 'x.bin', Object.setPrototypeOf(huge, Uint8Array.prototype))).toThrow();
     expect(readdirSync(tmpdir()).filter((one: string) => one.startsWith(prefix))).toEqual(before);
+    // From JavaScript, a name or a prefix that is not a string: refused before any folder is made.
+    const loose = privateTemp_write as unknown as (prefix: unknown, name: unknown, data: unknown) => unknown;
+    expect(() => loose(prefix, undefined, 'x')).toThrow('a plain name');
+    expect(() => loose(undefined, 'x.txt', 'x')).toThrow('a plain name');
+    expect(() => loose(prefix, ['a'], 'x')).toThrow('a plain name');
+    expect(readdirSync(tmpdir()).filter((one: string) => one.startsWith(prefix))).toEqual(before);
   });
 });
 

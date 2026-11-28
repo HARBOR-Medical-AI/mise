@@ -161,6 +161,22 @@ describe('builtin_edit', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('a replacement that deleted the original and then failed to upload drops both listings and keeps the edit', async () => {
+    mockCat.mockResolvedValue(ok('original'));
+    mockLocalEdit.mockResolvedValue({ content: 'EDITED CONTENT', changed: true });
+    mockReplace.mockResolvedValue({ success: false, error: 'the upload failed after the original was removed' });
+    mockInvalidate.mockClear();
+    const env = await builtin_edit(['notes.txt']);
+    expect(mockInvalidate).toHaveBeenCalledTimes(2);
+    const kept: string = /preserved at: (.+)$/m.exec((env.renderedErr ?? '').replace(/\x1b\[[0-9;]*m/g, ''))?.[1] ?? '';
+    const { readFileSync } = await import('node:fs');
+    expect(readFileSync(kept, 'utf8')).toBe('EDITED CONTENT');
+    // A listing that cannot be refreshed does not hide where the edit is kept.
+    mockInvalidate.mockImplementationOnce(() => { throw new Error('cache away'); });
+    const again = await builtin_edit(['notes.txt']);
+    expect(again.renderedErr).toContain('preserved at');
+  });
+
   it('removes its private copy once a save goes through, and keeps none at a predictable name', async () => {
     mockCat.mockResolvedValue(ok('original'));
     mockLocalEdit.mockResolvedValue({ content: 'EDITED CONTENT', changed: true });
