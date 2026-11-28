@@ -10,9 +10,9 @@
  * @module
  */
 
+import { hostDocker_trust } from "@fnndsc/salsa";
 import omelette from "omelette";
 
-import { hostDocker_trust } from "@fnndsc/salsa";
 import { run } from "./run.js";
 import { chiliErrLog, chiliLog } from "./screen/output.js";
 

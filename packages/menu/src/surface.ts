@@ -52,11 +52,6 @@ import type { FileDeliverRequest, FileDeliverResult, PromptKind, PromptPath, Pro
  *   browser, which has no directory to fill and can only accept files one at a
  *   time. It answers a different question from `engineFilesystem`: not *whose*
  *   disk, but whether there is one at all.
- * @property engineProcesses - The engine may start programs on its own host
- *   (docker, a host shell's program) for this surface: true for an in-process
- *   local shell, and for a daemon only when its operator granted the `shell`
- *   tier. Computed by the host from its own policy; nothing a surface
- *   declares on attach raises it. Absent means no.
  * @property tasks - The engine may start long jobs that change things beyond
  *   its host (a cloud's resources, and its bill): the `tasks` tier, declared
  *   only by a daemon whose operator granted it at launch. Absent means no.
@@ -71,6 +66,11 @@ export interface SurfaceCapabilities {
   fileDelivery: boolean;
   engineFilesystem: boolean;
   localFilesystem: boolean;
+  /**
+   * The engine may start programs on its own host (docker, a host shell's program) for this surface: true for an
+   * in-process local shell, and for a daemon only when its operator granted the `shell` tier. Computed by the host
+   * from its own policy; nothing a surface declares on attach raises it. Absent means no.
+   */
   engineProcesses?: boolean;
   tasks?: boolean;
 }

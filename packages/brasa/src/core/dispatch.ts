@@ -15,6 +15,7 @@
 import { commandCancellation_enable, commandCancellation_signalGet } from './cancellation.js';
 import { commands_register, commandOrder_set, envelopeHandler_get, plainHandler_get, builtinCommand_has, type CommandHandler, type EnvelopeHandler } from './commandRegistry.js';
 import { coreCommands } from './coreCommands.js';
+import { hostDisk_refusal } from './hostGate.js';
 import { ENVELOPE_ORDER, PLAIN_ORDER, HELP_ORDER } from './commandOrder.js';
 
 
@@ -49,7 +50,6 @@ import {
   type ShellWord,
 } from '../lib/parser.js';
 import { surface_get, capability_require } from './surface.js';
-import { hostDisk_refusal } from './hostGate.js';
 import { sudoCommand_run } from './elevation.js';
 import {
   pipeSegment_word,

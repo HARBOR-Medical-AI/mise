@@ -69,9 +69,9 @@ import { storeUrl_get } from '../../config/storeConfig.js';
 import { commandCancellation_enable, commandCancellation_signalGet } from '../../core/cancellation.js';
 import { authorizationFailure_is, sudoHint_build } from '../../core/elevation.js';
 import { exitCode_set } from '../../core/handlerRun.js';
+import { hostDisk_refusal, hostProcess_refusal } from '../../core/hostGate.js';
 import { repl_confirm } from '../../core/question.js';
 import { sink_dataLine } from '../../core/sink.js';
-import { hostDisk_refusal, hostProcess_refusal } from '../../core/hostGate.js';
 import { path_resolve, type ParsedArgs } from '../utils.js';
 import { storePath_resolve } from '../../core/paths.js';
 

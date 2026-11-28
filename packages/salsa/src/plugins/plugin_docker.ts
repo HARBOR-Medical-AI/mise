@@ -67,19 +67,8 @@ export const docker_run: DockerRun = (args: readonly string[]): Promise<DockerAn
       });
   });
 
-/**
- * Reports whether a docker daemon answers.
- *
- * @param run - The docker seam.
- * @returns True when `docker info` succeeds.
- *
- * @example
- * ```ts
- * await docker_isAvailable(); // false on a host without docker
- * ```
- */
 /** The docker a caller in this process trusts: a person's own command line sets it; an engine never does. */
-let hostDocker: DockerRun | null = null;
+let hostDocker_held: DockerRun | null = null;
 
 /**
  * Trusts this process to start docker on its host, for the image path of
@@ -95,7 +84,7 @@ let hostDocker: DockerRun | null = null;
  * ```
  */
 export function hostDocker_trust(run: DockerRun | null = docker_run): void {
-  hostDocker = run;
+  hostDocker_held = run;
 }
 
 /**
@@ -109,9 +98,20 @@ export function hostDocker_trust(run: DockerRun | null = docker_run): void {
  * ```
  */
 export function hostDocker_get(): DockerRun | null {
-  return hostDocker;
+  return hostDocker_held;
 }
 
+/**
+ * Reports whether a docker daemon answers.
+ *
+ * @param run - The docker seam.
+ * @returns True when `docker info` succeeds.
+ *
+ * @example
+ * ```ts
+ * await docker_isAvailable(); // false on a host without docker
+ * ```
+ */
 export async function docker_isAvailable(run: DockerRun = docker_run): Promise<boolean> {
   return (await run(['info', '--format', '{{.ServerVersion}}'])).ok;
 }

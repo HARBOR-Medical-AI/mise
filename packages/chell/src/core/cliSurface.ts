@@ -369,6 +369,8 @@ export function cliSurface_create(
   rl?: readline.Interface,
   bytes_fetch: BytesFetch | undefined = file_read,
 ): Surface {
+  // A local shell hosts the engine in its own process (no byte fetch of its own, or the plain file read).
+  const ownMachine: boolean = bytes_fetch === undefined || bytes_fetch === file_read;
   const capabilities: SurfaceCapabilities = {
     hiddenInput: true,
     localEdit: true,
@@ -381,9 +383,9 @@ export function cliSurface_create(
     // A local shell hosts the engine in its own process, so a path the engine
     // resolves is a path the operator can open. A remote client supplies a
     // byte fetch precisely because that is not true for it.
-    engineFilesystem: bytes_fetch === undefined || bytes_fetch === file_read,
+    engineFilesystem: ownMachine,
     // The same holds for programs: a local shell starts them on its operator's own machine.
-    engineProcesses: bytes_fetch === undefined || bytes_fetch === file_read,
+    engineProcesses: ownMachine,
     // Remote or not, a shell has a disk and directories. Asked for a folder it
     // should get a folder, not an archive of one.
     localFilesystem: true,
