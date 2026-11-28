@@ -23,6 +23,8 @@ export interface SessionEntry {
   activeAt: number;
   /** How many wires — relayed WebSockets — stand open on it right now. */
   wires: number;
+  /** Which life of the session this is: one boot, from its start to the berth it answers at. */
+  life: number;
 }
 
 /** A session the door has admitted but whose berth has not answered yet. */
@@ -30,6 +32,8 @@ interface PendingEntry {
   key: string;
   identity: string;
   user: string;
+  /** The life this boot begins. */
+  life: number;
 }
 
 /**
@@ -52,6 +56,8 @@ export interface EvictionClaim {
 export class SessionRegistry {
   private readonly byKey: Map<string, SessionEntry> = new Map();
   private readonly pending: Map<string, PendingEntry> = new Map();
+  /** The last life handed out; every boot, and every berth found that is not the one on record, is a new one. */
+  private lifeLast: number = 0;
   /**
    * How many times each key's session has been ended, or begun to be. It is
    * raised when an ending begins and never lowered, so an ending that has
@@ -82,11 +88,22 @@ export class SessionRegistry {
     return berthKey_compute(identity);
   }
 
-  /** Records an identity and the berth it answers at; a known one keeps its wires. */
-  public note(identity: string, user: string, berth: Berth): SessionEntry {
+  /**
+   * Records an identity and the berth it answers at; a known one keeps its wires. The berth on record again (the
+   * same address and attach token) keeps its life; a boot that settles gives its berth the boot's; any other
+   * berth is a life of its own.
+   *
+   * @param identity - The identity.
+   * @param user - The person.
+   * @param berth - The berth it answers at.
+   * @param life - The life of the boot that made the berth, when a boot settles.
+   * @returns The entry.
+   */
+  public note(identity: string, user: string, berth: Berth, life?: number): SessionEntry {
     const key: string = this.key_derive(identity);
     const known: SessionEntry | undefined = this.byKey.get(key);
-    const entry: SessionEntry = { key, identity, user, berth, activeAt: this.clock(), wires: known?.wires ?? 0 };
+    const same: boolean = known !== undefined && known.berth.url === berth.url && known.berth.token === berth.token;
+    const entry: SessionEntry = { key, identity, user, berth, activeAt: this.clock(), wires: known?.wires ?? 0, life: life ?? (same && known !== undefined ? known.life : ++this.lifeLast) };
     this.byKey.set(key, entry);
     return entry;
   }
@@ -123,11 +140,30 @@ export class SessionRegistry {
    * held for the identity names a daemon that is gone — it is dropped, or
    * the mount would keep sending the new session's traffic to the dead
    * one's port.
+   *
+   * @param identity - The identity.
+   * @param user - The person.
+   * @param joins - The login joins the boot already under way, rather than beginning one.
    */
-  public pending_note(identity: string, user: string): void {
+  public pending_note(identity: string, user: string, joins: boolean = false): void {
     const key: string = this.key_derive(identity);
     this.byKey.delete(key);
-    this.pending.set(key, { key, identity, user });
+    // A login that joins a boot under way keeps that boot's life; any other note begins a boot, and a life.
+    const joined: PendingEntry | undefined = joins ? this.pending.get(key) : undefined;
+    this.pending.set(key, { key, identity, user, life: joined?.life ?? ++this.lifeLast });
+  }
+
+  /**
+   * Which life of a key's session stands now, booting or answering.
+   *
+   * @param key - The session key.
+   * @returns The life, or null when no session is recorded under the key.
+   *
+   * @example
+   * const life: number | null = registry.life_get(key);
+   */
+  public life_get(key: string): number | null {
+    return this.byKey.get(key)?.life ?? this.pending.get(key)?.life ?? null;
   }
 
   /** The identity behind a key, admitted or still booting. */
@@ -149,7 +185,7 @@ export class SessionRegistry {
     const berth: Berth | null = await host.find(identity);
     if (berth === null) return null;
     this.pending.delete(key);
-    return this.note(identity, waiting.user, berth);
+    return this.note(identity, waiting.user, berth, waiting.life);
   }
 
   /** Looks a key up. */

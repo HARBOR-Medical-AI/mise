@@ -485,6 +485,90 @@ describe('the door', () => {
     await door.app.close();
   });
 
+  it('a logout during a boot owes its stop to that boot: paid once the same boot is up, never to a boot begun in its place', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const berths = new FakeBerthHost();
+    let fail: boolean = false;
+    const grants: GrantStore = new GrantStore(join(tokensDir, 'boot-grants.json'), 1, undefined, async (path: string, body: string): Promise<void> => {
+      if (fail) throw new Error('the disk is full');
+      await writeFile(path, body, { mode: 0o600 });
+    });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, grants, mint: async () => ({ token: 'T' }) });
+    const login = async () => door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const logout = async (cookie: string) => door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie } });
+    await door.app.listen({ host: '127.0.0.1', port: 0 });
+    const port: number = (door.app.server.address() as AddressInfo).port;
+    // The same boot: A logs in as it starts, A's logout fails, B joins the boot and watches it come up, A retries.
+    const a = await login();
+    expect((a.json() as { state: string }).state).toBe('starting');
+    const key: string = (a.json() as { key: string }).key;
+    berths.report = { lines: [], state: 'booting' };
+    fail = true;
+    expect((await logout(cookie_of(a))).statusCode).toBe(503);
+    fail = false;
+    const b = await login();
+    expect((b.json() as { state: string }).state).toBe('starting');
+    const watching = bootStream_open(port, key, cookie_of(b));
+    await until((): boolean => berths.listener !== null);
+    berths.found = { identity, url: 'ws://127.0.0.1:4444', token: 'BOOTED' };
+    berths.listener?.done('ready');
+    await watching.ended;
+    expect(door.registry.get(key)?.berth.token).toBe('BOOTED');
+    expect((await logout(cookie_of(a))).statusCode).toBe(200);
+    expect(berths.evicted).toEqual([identity]);
+    // A boot begun in its place: C logs in as a boot starts, C's logout fails, that boot fails, D's login begins
+    // another, C retries: D's boot is not C's to stop.
+    berths.found = null;
+    berths.report = null;
+    const c = await login();
+    expect((c.json() as { state: string }).state).toBe('starting');
+    fail = true;
+    expect((await logout(cookie_of(c))).statusCode).toBe(503);
+    fail = false;
+    berths.report = { lines: [], state: 'failed', reason: 'the image would not start' };
+    const d = await login();
+    expect((d.json() as { state: string }).state).toBe('starting');
+    expect((await logout(cookie_of(c))).statusCode).toBe(200);
+    expect(berths.evicted).toEqual([identity]);
+    expect(door.registry.identity_find(key)).toBe(identity);
+    await door.app.close();
+  });
+
+  it('a retried logout queued behind another browser\'s stop of the same berth asks again as its turn comes, and stops nothing more', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const berths = new FakeBerthHost();
+    berths.found = { identity, url: 'ws://127.0.0.1:4444', token: 'UP' };
+    let fail: boolean = false;
+    const grants: GrantStore = new GrantStore(join(tokensDir, 'queued-grants.json'), 1, undefined, async (path: string, body: string): Promise<void> => {
+      if (fail) throw new Error('the disk is full');
+      await writeFile(path, body, { mode: 0o600 });
+    });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, grants, mint: async () => ({ token: 'T' }) });
+    const login = async () => door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const logout = async (cookie: string) => door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie } });
+    const a = await login();
+    const b = await login();
+    fail = true;
+    expect((await logout(cookie_of(a))).statusCode).toBe(503);
+    fail = false;
+    // B's stop of the berth is under way and held; A's retry arrives behind it.
+    let release: (stopped: boolean) => void = (): void => undefined;
+    let evicts: number = 0;
+    berths.evict = async (): Promise<boolean> => {
+      evicts += 1;
+      return evicts === 1 ? new Promise<boolean>((resolve: (stopped: boolean) => void): void => { release = resolve; }) : true;
+    };
+    const outB = logout(cookie_of(b));
+    await until((): boolean => evicts === 1);
+    const outA = logout(cookie_of(a));
+    await new Promise((r) => setTimeout(r, 50));
+    release(true);
+    expect((await outB).statusCode).toBe(200);
+    expect((await outA).statusCode).toBe(200);
+    expect(evicts).toBe(1);
+    await door.app.close();
+  });
+
   it('a logout whose berth could not be stopped still logs the person out, and says the berth was not stopped', async () => {
     const berths = new FakeBerthHost();
     berths.evict = async (): Promise<boolean> => { throw new Error('the berth was not stopped: docker could not stop the container'); };

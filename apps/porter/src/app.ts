@@ -267,24 +267,12 @@ export function cookie_carried(cookieHeader: string | undefined): boolean {
   return cookieHeader.split(';').some((part: string): boolean => part.slice(0, Math.max(0, part.indexOf('='))).trim() === DOOR_COOKIE);
 }
 
-/** A berth stop a logout owes: the session key, and the berth that stood under it when the logout came. */
+/** A berth stop a logout owes: the session key, and the life of the session that stood under it when the logout came. */
 interface OwedStop {
   /** The session key. */
   key: string;
-  /** The berth then, or null when none was up. */
-  berth: Berth | null;
-}
-
-/**
- * Whether two berths are one: the same address and the same attach token.
- *
- * @param a - A berth, or none.
- * @param b - Another, or none.
- * @returns True when both are none, or both are the same berth.
- */
-function berth_isSame(a: Berth | null, b: Berth | null): boolean {
-  if (a === null || b === null) return a === b;
-  return a.url === b.url && a.token === b.token;
+  /** The life then (`SessionRegistry.life_get`), or null when no session was recorded. */
+  life: number | null;
 }
 
 /** What a logout's berth stop came to. */
@@ -882,7 +870,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       // Not when an end of the session has been asked for and waits its turn behind that restart: the boot
       // is of a berth that is to be stopped, and the login waits for the end and looks afresh.
       if (boot_isUnderWay() && !registry.end_pending(key)) {
-        registry.pending_note(identity, username);
+        registry.pending_note(identity, username, true);
         options.log?.(`${username} joins the boot already under way`);
         return await starting_answer();
       }
@@ -899,7 +887,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       // joined whether or not the berth it replaces still answers: while a
       // restart is booting, its record is followed, not the old berth.
       if (boot_isUnderWay()) {
-        registry.pending_note(identity, username);
+        registry.pending_note(identity, username, true);
         options.log?.(`${username} joins the boot already under way`);
         return await starting_answer();
       }
@@ -1098,15 +1086,22 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
    *
    * @param key - The session key.
    * @param identity - The session.
+   * @param still - Whether the stop is still owed, asked again just before the berth is stopped.
    * @returns Null when the stop went through (or there was nothing to stop); otherwise why the berth was not stopped.
    */
-  const logout_stop = async (key: string, identity: string): Promise<string | null> => {
+  const logout_stop = async (key: string, identity: string, still: () => boolean = (): boolean => true): Promise<string | null> => {
     try {
-      const was: SessionEntry | null = registry.get(key);
-      const ended: boolean = await registry.ending_run(key, (): Promise<boolean> => host.evict(identity, 'end'));
-      // The entry that was ended is retired, and only that one: a restart or a login waiting on this
-      // stop then finds no session to act on, and a session noted since is another's to keep.
-      if (was !== null && registry.get(key) === was) registry.forget(key);
+      // The ending can wait its turn behind another: whether the stop is still owed is asked again as it begins,
+      // and the entry it ended is retired before the next in line begins, so that one asks about what is left.
+      const ended: boolean = await registry.ending_run(key, async (): Promise<boolean> => {
+        if (!still()) return false;
+        const was: SessionEntry | null = registry.get(key);
+        const stopped: boolean = await host.evict(identity, 'end');
+        // The entry that was ended is retired, and only that one: a restart or a login waiting on this
+        // stop then finds no session to act on, and a session noted since is another's to keep.
+        if (was !== null && registry.get(key) === was) registry.forget(key);
+        return stopped;
+      });
       options.log?.(`${user_extract(identity)} logged out${ended ? '; their berth stopped, its volumes kept' : ''}`);
       return null;
     } catch (error: unknown) {
@@ -1126,7 +1121,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
    */
   const stop_owe = (held: GrantNamed | null): void => {
     if (held === null || stopsOwed.has(held.id) || !grants.grant_admits(held.id, held.key)) return;
-    stopsOwed.set(held.id, { key: held.key, berth: registry.get(held.key)?.berth ?? null });
+    stopsOwed.set(held.id, { key: held.key, life: registry.life_get(held.key) });
   };
 
   /**
@@ -1139,11 +1134,13 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     const owed: OwedStop | undefined = held === null ? undefined : stopsOwed.get(held.id);
     if (held === null || owed === undefined) return { owed: false, unstopped: null };
     stopsOwed.delete(held.id);
-    // The stop is owed to the berth that stood when the logout came, that very one (its address and its token):
-    // a berth found or started in its place under the same key since is not this logout's to stop.
-    if (!berth_isSame(registry.get(owed.key)?.berth ?? null, owed.berth)) return { owed: true, unstopped: null };
+    // The stop is owed to the life of the session that stood when the logout came (its boot, and the berth that
+    // boot came to): one found or started in its place under the same key since is not this logout's to stop.
+    const life: number | null = owed.life;
+    const stop_isOwed = (): boolean => life !== null && registry.life_get(owed.key) === life;
+    if (!stop_isOwed()) return { owed: true, unstopped: null };
     const identity: string | null = options.logoutEnds === true ? registry.identity_find(owed.key) : null;
-    return { owed: true, unstopped: identity === null ? null : await logout_stop(owed.key, identity) };
+    return { owed: true, unstopped: identity === null ? null : await logout_stop(owed.key, identity, stop_isOwed) };
   };
 
   app.post('/logout', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {

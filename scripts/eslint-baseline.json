@@ -59,8 +59,8 @@
     "jsdoc/escape-inline-tags": 1,
     "jsdoc/require-example": 146,
     "jsdoc/require-jsdoc": 242,
-    "jsdoc/require-param": 42,
-    "jsdoc/require-returns": 22,
+    "jsdoc/require-param": 37,
+    "jsdoc/require-returns": 21,
     "jsdoc/require-throws": 1,
     "local/file-overview-sections": 76
   },
