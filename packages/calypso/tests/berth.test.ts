@@ -226,6 +226,42 @@ describe('berth file IO', () => {
     expect(closing_take(identity, runtimeDir)).toBe('restart');
   });
 
+  it('without a runtime folder, a temporary folder spelled with `..` is refused too; the ordinary fallback works', () => {
+    const identity: string = 'u@http://h/api/v1/';
+    const savedTmp: string | undefined = process.env.TMPDIR;
+    const base: string = mkdtempSync(join(tmpdir(), 'berth-tmp-'));
+    try {
+      delete process.env.XDG_RUNTIME_DIR;
+      process.env.TMPDIR = base;
+      // The control: the ordinary fallback writes and reads.
+      expect(berthDir_path()).toBe(`${base}/calypso-${String(process.getuid?.())}`);
+      berth_write(berth_of(identity));
+      expect(berth_read(identity)?.url).toBe('ws://127.0.0.1:4321');
+      // The same folder reached by a spelling that climbs: refused, though the record is there.
+      mkdirSync(join(base, 'x'), { mode: 0o700 });
+      process.env.TMPDIR = `${base}/x/..`;
+      expect(berthDir_path()).toBe(`${base}/x/../calypso-${String(process.getuid?.())}`);
+      expect(berth_read(identity)).toBeNull();
+      expect(berthAll_read()).toEqual([]);
+      expect(() => berth_write(berth_of(identity, 'ws://127.0.0.1:7777'))).toThrow("names '..'");
+      process.env.TMPDIR = base;
+      expect(berth_read(identity)?.url).toBe('ws://127.0.0.1:4321');
+    } finally {
+      if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
+      process.env.XDG_RUNTIME_DIR = runtimeDir;
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('an empty base stays relative and a base of `/` is the root, as before', () => {
+    const identity: string = 'u@http://h/api/v1/';
+    const name: string = `berth-${berthKey_compute(identity)}.json`;
+    expect(berth_pathIn('', identity)).toBe(`calypso/${name}`);
+    expect(berth_pathIn('/', identity)).toBe(`/calypso/${name}`);
+    expect(closing_pathIn('', identity)).toBe(`calypso/closing-${berthKey_compute(identity)}.json`);
+    expect(closing_pathIn('/', identity)).toBe(`/calypso/closing-${berthKey_compute(identity)}.json`);
+  });
+
   it('a reader never makes the berth folder; a writer makes it 0700', () => {
     rmSync(berthDir_path(), { recursive: true, force: true });
     expect(berth_read('u@http://h/api/v1/')).toBeNull();
@@ -411,6 +447,56 @@ describe('a porter\'s sessions', () => {
     const on: string = berthLines_say(berth.identity, berth.url, berth.token, true, located[0]!.path).join('\n');
     expect(on).toContain(`http://127.0.0.1:9999/?token=${berth.token}`);
     expect(on).toContain(`--token ${berth.token}`);
+  });
+
+  it('a porter root porter itself would refuse (the shared /tmp) is passed over; a later root still counts', async () => {
+    const tmpStats = (await import('node:fs')).lstatSync('/tmp');
+    if (!(tmpStats.uid === 0 && (tmpStats.mode & 0o1000) !== 0)) return;
+    const refusedId: string = identity_normalise(`berth-test-${String(process.pid)}-${String(Date.now())}`, 'http://cube/api/v1/');
+    const keptId: string = identity_normalise('kept', 'http://cube/api/v1/');
+    // A session folder of this account's straight under /tmp, its record valid: only the root is wrong.
+    const underTmp: string = join('/tmp', berthKey_compute(refusedId));
+    const refusedPath: string = berth_pathIn(join(underTmp, 'run'), refusedId);
+    folder_put(join(refusedPath, '..'));
+    record_put(refusedPath, JSON.stringify(berth_of(refusedId, 'ws://127.0.0.1:6001')));
+    const keptPath: string = berth_pathIn(join(runtimeDir, 'state', 'porter', berthKey_compute(keptId), 'run'), keptId);
+    folder_put(join(keptPath, '..'));
+    record_put(keptPath, JSON.stringify(berth_of(keptId, 'ws://127.0.0.1:6002')));
+    process.env.PORTER_STATE_DIR = '/tmp';
+    try {
+      expect(berth_read(refusedId)).toBeNull();
+      expect(await new LocalBerthResolver().resolve(refusedId)).toBeNull();
+      const listed: string[] = (await new LocalBerthResolver().listLocated()).map((one) => one.berth.identity);
+      expect(listed).not.toContain(refusedId);
+      expect(listed).toContain(keptId);
+      expect(berth_read(keptId)?.url).toBe('ws://127.0.0.1:6002');
+    } finally {
+      delete process.env.PORTER_STATE_DIR;
+      rmSync(underTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('a home spelled with `..` keeps it in the porter root, and a record at the folded place is not found', () => {
+    const identity: string = identity_normalise('chris', 'http://cube/api/v1/');
+    const savedHome: string | undefined = process.env.HOME;
+    const home: string = join(runtimeDir, 'home');
+    const folded: string = berth_pathIn(join(home, '.local', 'state', 'porter', berthKey_compute(identity), 'run'), identity);
+    folder_put(join(folded, '..'));
+    record_put(folded, JSON.stringify(berth_of(identity, 'ws://127.0.0.1:6100')));
+    folder_put(join(home, 'x'));
+    delete process.env.XDG_STATE_HOME;
+    try {
+      process.env.HOME = home;
+      expect(berth_read(identity)?.url).toBe('ws://127.0.0.1:6100');
+      process.env.HOME = `${home}/x/..`;
+      // The root spelled with `..` is refused and passed over: no candidate is the folded place.
+      expect(berthPaths_list(identity).some((one: string): boolean => one.startsWith(join(home, '.local')))).toBe(false);
+      expect(berth_read(identity)).toBeNull();
+      expect(berthAll_read().map((one) => one.identity)).not.toContain(identity);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+      process.env.XDG_STATE_HOME = join(runtimeDir, 'state');
+    }
   });
 
   it('honours PORTER_STATE_DIR', () => {

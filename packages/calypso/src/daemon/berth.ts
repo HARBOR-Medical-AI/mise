@@ -30,7 +30,7 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 import { identityName_spell } from '@fnndsc/cumin/identity-epoch';
-import { ownFile_read, ownFile_take, ownFile_write, ownFolder_settle, type OwnFolder, type OwnHeld, type OwnRead, type OwnRefusal } from '@fnndsc/fond';
+import { ownFile_read, ownFile_take, ownFile_write, ownFolder_settle, trustedRoot_settle, type OwnFolder, type OwnHeld, type OwnRead, type OwnRefusal } from '@fnndsc/fond';
 import { CLOSING_CAUSES, type ClosingCause } from '@fnndsc/menu';
 
 // A host that keeps berth folders under a root of its own asks this before it starts (porter's state root).
@@ -124,7 +124,10 @@ export function berthDir_path(): string {
   if (runtimeDir) return spelled_join(runtimeDir, BERTH_SUBDIR);
   // No runtime directory: a folder of this account's own name under the shared temporary folder, so no other
   // account can hold the name for everyone (held to this account by ownFolder_settle before use).
-  return join(tmpdir(), `${BERTH_SUBDIR}-${String(process.getuid?.() ?? 'user')}`);
+  // Read as os.tmpdir() reads it on Linux (TMPDIR, TMP, TEMP, else the platform's), but from this process's own
+  // environment and as spelled.
+  const temporary: string = process.env.TMPDIR || process.env.TMP || process.env.TEMP || tmpdir();
+  return spelled_join(temporary, `${BERTH_SUBDIR}-${String(process.getuid?.() ?? 'user')}`);
 }
 
 /**
@@ -141,7 +144,10 @@ export function berthDir_path(): string {
  * ```
  */
 export function spelled_join(base: string, ...names: string[]): string {
-  return [base.replace(/\/+$/, ''), ...names].join('/');
+  // An empty base stays relative (as join gave); a base of only slashes is the root.
+  if (base === '') return names.join('/');
+  const trimmed: string = base.replace(/\/+$/, '');
+  return trimmed === '' ? `/${names.join('/')}` : [trimmed, ...names].join('/');
 }
 
 /** The most a berth record may hold. */
@@ -273,7 +279,8 @@ export function berthOwn_read(identity: string): Berth | null {
 export function porterStateRoots_get(): string[] {
   const roots: string[] = [];
   if (process.env.PORTER_STATE_DIR) roots.push(process.env.PORTER_STATE_DIR);
-  roots.push(spelled_join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'porter'));
+  // The home as spelled too (HOME, else the account's): a `..` in it reaches the check, never folded away first.
+  roots.push(spelled_join(process.env.XDG_STATE_HOME || spelled_join(process.env.HOME || homedir(), '.local', 'state'), 'porter'));
   roots.push('/var/lib/porter/sessions');
   return [...new Set(roots)];
 }
@@ -288,8 +295,25 @@ export function porterStateRoots_get(): string[] {
 export function berthPaths_list(identity: string): string[] {
   return [
     berth_path(identity),
-    ...porterStateRoots_get().map((root: string): string => berth_pathIn(spelled_join(root, berthKey_compute(identity), 'run'), identity)),
+    ...porterRootsHeld_get().map((root: string): string => berth_pathIn(spelled_join(root, berthKey_compute(identity), 'run'), identity)),
   ];
+}
+
+/**
+ * The porter state roots a client may read sessions from: each held as porter holds its own (`trustedRoot_settle`:
+ * on a trusted path, and not itself open to other accounts), by its resolved path. A refused root is said once and
+ * passed over; the roots after it still count. A root not made yet holds no sessions and is passed over quietly.
+ *
+ * @returns The held roots' resolved paths.
+ */
+function porterRootsHeld_get(): string[] {
+  const held: string[] = [];
+  for (const root of porterStateRoots_get()) {
+    const settled: OwnFolder | OwnRefusal = trustedRoot_settle(root);
+    if (settled.ok) held.push(settled.path);
+    else if (settled.missing !== true) refusal_say(settled);
+  }
+  return held;
 }
 
 /**
@@ -395,7 +419,7 @@ export function berthAllLocated_read(): LocatedBerth[] {
  */
 function porterSessionDirs_get(): string[] {
   const dirs: string[] = [];
-  for (const root of porterStateRoots_get()) {
+  for (const root of porterRootsHeld_get()) {
     try {
       for (const entry of readdirSync(root, { withFileTypes: true })) {
         if (entry.isDirectory()) dirs.push(spelled_join(root, entry.name, 'run', BERTH_SUBDIR));

@@ -86,6 +86,13 @@ describe('porterStateDir_resolve', () => {
     expect(porterStateDir_resolve({ XDG_STATE_HOME: '/state' })).toBe('/state/porter');
     expect(porterStateDir_resolve({}).endsWith('/.local/state/porter')).toBe(true);
   });
+  it('builds the default from HOME as spelled, so a `..` in it is kept for the state root\'s check to refuse', async () => {
+    expect(porterStateDir_resolve({}, '/home/me/x/..')).toBe('/home/me/x/../.local/state/porter');
+    const { stateRoot_settle } = await import('../../src/host/processHost.js');
+    const refused = stateRoot_settle(porterStateDir_resolve({}, '/home/me/x/..'));
+    expect(refused.ok ? '' : refused.said).toContain("names '..'");
+  });
+
   it('takes an empty XDG_STATE_HOME as unset, and PORTER_STATE_DIR before either', () => {
     expect(porterStateDir_resolve({ XDG_STATE_HOME: '' })).toBe(porterStateDir_resolve({}));
     expect(porterStateDir_resolve({ XDG_STATE_HOME: '' }).endsWith('/.local/state/porter')).toBe(true);
