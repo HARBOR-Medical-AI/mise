@@ -154,27 +154,36 @@ async function edit_run(named: string): Promise<CommandEnvelope> {
   // name is followed, and nobody else reads the edit.
   const temp: PrivateTemp = privateTemp_write('chell-edit-', `edit${suffix_safe(ext, '.txt')}`, edit.content);
   const tmpPath: string = temp.path;
-  let keepTmp: boolean = false;
+  // The copy is kept until the save is confirmed: a rejected save, or one that throws, says where it is.
+  let result: EditResult;
   try {
-    const result: EditResult = await file_replaceContent(target, tmpPath);
-    // The folder's listing is stale by both its names: where the store
-    // keeps it, and the path the file was reached by.
-    listCache_get().cache_invalidate(posix.dirname(target));
-    listCache_get().cache_invalidate(posix.dirname(await path_resolve(named)));
-    if (result.success) {
-      return envelope_ok(`${chalk.green(`Saved: ${named}`)}\n`);
-    }
-    const apiErr: StackMessage | undefined = errorStack.stack_pop();
-    let renderedErr: string = `${chalk.red(`edit: Save failed — ${result.error}`)}\n`;
-    if (apiErr) renderedErr += `${chalk.red(`  API error: ${error_stripDebugPrefix(apiErr.message)}`)}\n`;
-    renderedErr += `${chalk.yellow(`Your edits are preserved at: ${tmpPath}`)}\n`;
-    keepTmp = true;
-    exitCode_set(1);
-    return envelope_error('', undefined, renderedErr);
-  } finally {
-    // A failed save keeps the private copy (its path was said); every other way out removes it.
-    if (!keepTmp) temp.folder_remove();
+    result = await file_replaceContent(target, tmpPath);
+  } catch (error: unknown) {
+    result = { success: false, error: error instanceof Error ? error.message : String(error) };
   }
+  if (!result.success) return editSave_fail(result.error, tmpPath);
+  // Saved: the copy goes; then the folder's listing is stale by both its names: where the store keeps it, and the
+  // path the file was reached by.
+  temp.folder_remove();
+  listCache_get().cache_invalidate(posix.dirname(target));
+  listCache_get().cache_invalidate(posix.dirname(await path_resolve(named)));
+  return envelope_ok(`${chalk.green(`Saved: ${named}`)}\n`);
+}
+
+/**
+ * Says a save that did not go through, and where the edit is kept.
+ *
+ * @param reason - Why the save failed.
+ * @param kept - The private copy that holds the edit.
+ * @returns The failure.
+ */
+function editSave_fail(reason: string | undefined, kept: string): CommandEnvelope {
+  const apiErr: StackMessage | undefined = errorStack.stack_pop();
+  let renderedErr: string = `${chalk.red(`edit: Save failed — ${String(reason)}`)}\n`;
+  if (apiErr) renderedErr += `${chalk.red(`  API error: ${error_stripDebugPrefix(apiErr.message)}`)}\n`;
+  renderedErr += `${chalk.yellow(`Your edits are preserved at: ${kept}`)}\n`;
+  exitCode_set(1);
+  return envelope_error('', undefined, renderedErr);
 }
 
 /**

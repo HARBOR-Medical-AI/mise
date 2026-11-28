@@ -89,7 +89,7 @@
     "@typescript-eslint/no-unused-vars": 50,
     "@typescript-eslint/prefer-promise-reject-errors": 1,
     "@typescript-eslint/require-await": 67,
-    "@typescript-eslint/restrict-template-expressions": 499,
+    "@typescript-eslint/restrict-template-expressions": 498,
     "@typescript-eslint/return-await": 2,
     "complexity": 71,
     "import/first": 49,

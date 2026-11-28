@@ -150,6 +150,9 @@ export function wireName_place(folder: string, name: string): HostPlace {
 /** A name a private temporary file may take: a plain name, never a path, `..` or NUL. */
 const PRIVATE_NAME: RegExp = /^(?!\.\.?$)[A-Za-z0-9._+-]{1,64}$/;
 
+/** A folder prefix: a plain name, under the temporary folder. */
+const PRIVATE_PREFIX: RegExp = /^[A-Za-z0-9_+-][A-Za-z0-9._+-]{0,31}$/;
+
 /** A file suffix a caller may ask for (`.mise`, `.json`): a dot and a few plain characters. */
 export const SAFE_SUFFIX: RegExp = /^\.[A-Za-z0-9_+-]{1,16}$/;
 
@@ -179,7 +182,7 @@ export interface PrivateTemp {
  * @param name - The file's name inside it: a plain name (no separator, `..` or NUL), else refused.
  * @param data - What it holds: text or bytes.
  * @returns The file, its folder, and how to remove them.
- * @throws {Error} When the name is not a plain name, or the data neither text nor bytes.
+ * @throws {Error} When the name or the prefix is not a plain name, the data neither text nor bytes, or the file cannot be written (the folder is then removed).
  *
  * @example
  * ```ts
@@ -189,10 +192,17 @@ export interface PrivateTemp {
 export function privateTemp_write(prefix: string, name: string, data: unknown): PrivateTemp {
   if (!PRIVATE_NAME.test(name)) throw new Error(`a private temporary file's name is a plain name: ${JSON.stringify(name)}`);
   if (typeof data !== 'string' && !(data instanceof Uint8Array)) throw new Error('a private temporary file holds text or bytes');
+  if (!PRIVATE_PREFIX.test(prefix)) throw new Error(`a private temporary folder's prefix is a plain name: ${JSON.stringify(prefix)}`);
   const folder: string = mkdtempSync(path.join(tmpdir(), prefix));
-  chmodSync(folder, 0o700);
   const file: string = path.join(folder, name);
-  writeFileSync(file, data, { flag: 'wx', mode: 0o600 });
+  try {
+    chmodSync(folder, 0o700);
+    writeFileSync(file, data, { flag: 'wx', mode: 0o600 });
+  } catch (error: unknown) {
+    // A folder half made (a full disk mid-write, say) is not left behind.
+    rmSync(folder, { recursive: true, force: true });
+    throw error;
+  }
   return { folder, path: file, folder_remove: (): void => { rmSync(folder, { recursive: true, force: true }); } };
 }
 

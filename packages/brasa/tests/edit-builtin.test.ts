@@ -141,12 +141,24 @@ describe('builtin_edit', () => {
     expect(env.renderedErr).toContain('preserved at');
     expect(process.exitCode).toBe(1);
     // The preserved copy is the edit itself, 0600, in a folder of its own that only this account can open.
-    const kept: string = /preserved at: (\S+)/.exec(env.renderedErr ?? '')?.[1] ?? '';
+    const kept: string = /preserved at: (.+)$/m.exec((env.renderedErr ?? '').replace(/\x1b\[[0-9;]*m/g, ''))?.[1] ?? '';
     const { readFileSync, statSync } = await import('node:fs');
     const { dirname } = await import('node:path');
     expect(readFileSync(kept, 'utf8')).toBe('EDITED CONTENT');
     expect(statSync(kept).mode & 0o777).toBe(0o600);
     expect(statSync(dirname(kept)).mode & 0o777).toBe(0o700);
+  });
+
+  it('keeps and reports its private copy when the save throws, as when it is refused', async () => {
+    mockCat.mockResolvedValue(ok('original'));
+    mockLocalEdit.mockResolvedValue({ content: 'EDITED CONTENT', changed: true });
+    mockReplace.mockRejectedValue(new Error('the store is away'));
+    const env = await builtin_edit(['notes.txt']);
+    const kept: string = /preserved at: (.+)$/m.exec((env.renderedErr ?? '').replace(/\x1b\[[0-9;]*m/g, ''))?.[1] ?? '';
+    const { readFileSync } = await import('node:fs');
+    expect(env.renderedErr).toContain('the store is away');
+    expect(readFileSync(kept, 'utf8')).toBe('EDITED CONTENT');
+    expect(process.exitCode).toBe(1);
   });
 
   it('removes its private copy once a save goes through, and keeps none at a predictable name', async () => {
