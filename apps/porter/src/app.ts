@@ -1095,11 +1095,11 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       // and the entry it ended is retired before the next in line begins, so that one asks about what is left.
       const ended: boolean = await registry.ending_run(key, async (): Promise<boolean> => {
         if (!still()) return false;
-        const was: SessionEntry | null = registry.get(key);
+        const was: number | null = registry.life_get(key);
         const stopped: boolean = await host.evict(identity, 'end');
-        // The entry that was ended is retired, and only that one: a restart or a login waiting on this
-        // stop then finds no session to act on, and a session noted since is another's to keep.
-        if (was !== null && registry.get(key) === was) registry.forget(key);
+        // The life that was ended is retired, a boot as much as a berth, and only that one: a restart or a login
+        // waiting on this stop then finds no session to act on, and a session begun since is another's to keep.
+        if (was !== null && registry.life_get(key) === was) registry.forget(key);
         return stopped;
       });
       options.log?.(`${user_extract(identity)} logged out${ended ? '; their berth stopped, its volumes kept' : ''}`);

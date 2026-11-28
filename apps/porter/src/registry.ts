@@ -90,8 +90,8 @@ export class SessionRegistry {
 
   /**
    * Records an identity and the berth it answers at; a known one keeps its wires. The berth on record again (the
-   * same address and attach token) keeps its life; a boot that settles gives its berth the boot's; any other
-   * berth is a life of its own.
+   * same address and attach token) keeps its life; a boot that settles, or is booting when its berth is found,
+   * gives the berth the boot's; any other berth is a life of its own.
    *
    * @param identity - The identity.
    * @param user - The person.
@@ -103,7 +103,11 @@ export class SessionRegistry {
     const key: string = this.key_derive(identity);
     const known: SessionEntry | undefined = this.byKey.get(key);
     const same: boolean = known !== undefined && known.berth.url === berth.url && known.berth.token === berth.token;
-    const entry: SessionEntry = { key, identity, user, berth, activeAt: this.clock(), wires: known?.wires ?? 0, life: life ?? (same && known !== undefined ? known.life : ++this.lifeLast) };
+    // A boot starts only when no live session answers, so a berth found while one is booting is that boot's: it
+    // takes the boot's life, and the boot is over.
+    const booted: PendingEntry | undefined = this.pending.get(key);
+    this.pending.delete(key);
+    const entry: SessionEntry = { key, identity, user, berth, activeAt: this.clock(), wires: known?.wires ?? 0, life: life ?? (same && known !== undefined ? known.life : booted?.life ?? ++this.lifeLast) };
     this.byKey.set(key, entry);
     return entry;
   }
@@ -183,6 +187,9 @@ export class SessionRegistry {
     const waiting: PendingEntry | undefined = this.pending.get(key);
     if (waiting === undefined) return this.byKey.get(key) ?? null;
     const berth: Berth | null = await host.find(identity);
+    // The answer is of the boot that was waiting when it was asked: one replaced, settled or retired meanwhile
+    // takes nothing from it, and what stands now is what there is.
+    if (this.pending.get(key) !== waiting) return this.byKey.get(key) ?? null;
     if (berth === null) return null;
     this.pending.delete(key);
     return this.note(identity, waiting.user, berth, waiting.life);
