@@ -453,6 +453,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
    */
   const entry_recover = async (entry: SessionEntry): Promise<'moved' | 'same' | 'gone'> => {
     const found: Berth | null = await host.find(entry.identity);
+    // The answer is of the life the relay held: one that ended or was replaced meanwhile (a restart's boot, say)
+    // is not this answer's to forget or to note over; the browser is sent to look again.
+    if (registry.life_get(entry.key) !== entry.life) return 'moved';
     if (found === null) {
       registry.forget(entry.key);
       options.log?.(`${entry.user}'s session at ${entry.berth.url} is gone; forgot it`);
