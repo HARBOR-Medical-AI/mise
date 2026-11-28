@@ -680,14 +680,14 @@ describe('the registry', () => {
 });
 
 describe('address helpers', () => {
-  it('splits a mount URL into key and rest', () => {
+  it('splits a mount URL into key and rest', async () => {
     expect(mountUrl_split('/s/0123456789abcdef/')).toEqual({ key: '0123456789abcdef', rest: '/' });
     expect(mountUrl_split('/s/0123456789abcdef/assets/x.js?v=1')).toEqual({ key: '0123456789abcdef', rest: '/assets/x.js?v=1' });
     expect(mountUrl_split('/s/short/')).toBeNull();
     expect(mountUrl_split('/elsewhere')).toBeNull();
   });
 
-  it('puts the token on the byte route and the wire, and nowhere else', () => {
+  it('puts the token on the byte route and the wire, and nowhere else', async () => {
     expect(upstreamPath_build('/vfs?path=%2Fa', 'T')).toBe('/vfs?path=%2Fa&token=T');
     expect(upstreamPath_build('/backend', 'T')).toBe('/backend?token=T');
     expect(upstreamPath_build('/?door', 'T')).toBe('/?door=&token=T');
@@ -695,7 +695,7 @@ describe('address helpers', () => {
     expect(upstreamPath_build('sounds/press.mp3', 'T')).toBe('/sounds/press.mp3');
   });
 
-  it('names a berth\'s HTTP origin', () => {
+  it('names a berth\'s HTTP origin', async () => {
     expect(berthHttp_derive({ identity: 'i', url: 'ws://127.0.0.1:4444', token: 't' })).toBe('http://127.0.0.1:4444');
   });
 });
@@ -1003,7 +1003,7 @@ describe('door tokens (chell auth)', () => {
     expect(body.token?.token.startsWith('pdt_')).toBe(true);
     expect(said.some((line) => line.includes('minted a door token "cron@titan" for chris'))).toBe(true);
     // The store on disk holds the hash, never the plaintext.
-    const kept: string = await (await import('node:fs/promises')).readFile(join(tokensDir, 'tokens.json'), 'utf8');
+    const kept: string = await (await import('node:fs/promises')).readFile(join(tokensDir, 'tokens.json.d', 's0', '1.json'), 'utf8');
     expect(kept).not.toContain(body.token?.token as string);
 
     const byToken = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${body.token?.token}` } });
@@ -1011,12 +1011,212 @@ describe('door tokens (chell auth)', () => {
     expect(byToken.json()).toMatchObject({ state: 'attached' });
     expect(cookie_of(byToken)).toMatch(/^porter_session=/);
     expect(said.some((line) => line.includes('chris came through by door token "cron@titan"'))).toBe(true);
-    expect(built.tokens.list()[0]?.lastUsed).not.toBeNull();
+    expect((await built.tokens.list())[0]?.lastUsed).not.toBeNull();
+  });
+
+  it('a token of the same username minted for another CUBE is refused at the door: no cookie, no look for a session, no start', async () => {
+    const local = await built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
+    const foreign = await built.tokens.mint('chris@https://other.example.org/api/v1/', 'chris', 'laptop');
+    let looked: number = 0;
+    const find = host.find.bind(host);
+    host.find = async (): Promise<Berth | null> => { looked += 1; return find(); };
+    host.found = up;
+    const refused = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${foreign.token}` } });
+    expect(refused.statusCode).toBe(401);
+    expect(refused.headers['set-cookie']).toBeUndefined();
+    expect((refused.json() as { error: string }).error).toContain('another CUBE');
+    expect(looked).toBe(0);
+    expect(host.spawned).toEqual([]);
+    expect(said.some((line) => line.includes('minted for chris@https://other.example.org/api/v1/'))).toBe(true);
+    // The local one is let in.
+    const admitted = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${local.token}` } });
+    expect(admitted.statusCode).toBe(200);
+    expect(cookie_of(admitted)).toMatch(/^porter_session=/);
+  });
+
+  it('a device code submitted twice at once mints one token, and a code that dies while its token is minted authorises nothing', async () => {
+    let release: () => void = (): void => undefined;
+    let holding: boolean = true;
+    const store: TokenStore = new TokenStore(join(tokensDir, 'codes.json'), 30, (): Date => new Date(), {
+      read_after: async (): Promise<void> => { if (holding) await new Promise<void>((resolve) => { release = resolve; }); },
+    });
+    let clock: number = Date.now();
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'codes.json') }, host, tokens: store, now: (): number => clock, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    holding = false;
+    // A token this person already holds for that host: a renewal that fails must leave it standing.
+    const standing = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    holding = true;
+    const issued = await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } });
+    const { code } = issued.json() as { code: string };
+    const submit = () => door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
+    const first = submit();
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    const second = await submit();
+    expect(second.statusCode).toBe(410);
+    // The code dies while the first login's token is being minted.
+    clock += 11 * 60 * 1000;
+    holding = false;
+    release();
+    const answer = await first;
+    expect(answer.statusCode).toBe(410);
+    expect((answer.json() as { error: string }).error).toContain('ran out');
+    // The undelivered token is gone and the standing one never left: exactly one token, and it is the old one.
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    expect((await store.check(standing.token)).ok).toBe(true);
+    const polled = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
+    expect(polled.json()).toEqual({ state: 'unknown' });
+    await door.app.close();
+  });
+
+  it('a renewal takes effect only when chell\'s poll takes it: approved and never polled, the standing token stays; a settlement that fails is asked again', async () => {
+    let failOnce: boolean = false;
+    const store: TokenStore = new TokenStore(join(tokensDir, 'handoff.json'), 30, (): Date => new Date(), {
+      read_after: async (): Promise<void> => { if (failOnce) { failOnce = false; throw new Error('the store is busy'); } },
+    });
+    let clock: number = Date.now();
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'handoff.json') }, host, tokens: store, now: (): number => clock, sweepMs: 20, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    await door.app.ready();
+    const standing = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    const approve = async (): Promise<string> => {
+      const { code } = (await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } })).json() as { code: string };
+      const approved = await door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
+      expect(approved.statusCode).toBe(200);
+      return code;
+    };
+    // Approved, never polled, the code lapses: the standing token still lets in, and the sweep drops the renewal.
+    await approve();
+    expect((await store.check(standing.token)).ok).toBe(true);
+    clock += 11 * 60 * 1000;
+    for (let i = 0; i < 50 && (await store.list()).length > 1; i++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    // Approved, then a poll whose settlement fails: 503 and still pending; the next poll hands it over and the standing token goes.
+    const code: string = await approve();
+    failOnce = true;
+    const failed = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
+    // Pending, exactly as chell reads a code still waiting (packages/chell door.test pins that it polls again on it).
+    expect(failed.statusCode).toBe(200);
+    expect(failed.json()).toEqual({ state: 'pending' });
+    expect((await store.check(standing.token)).ok).toBe(true);
+    const taken = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
+    expect(taken.json()).toMatchObject({ state: 'authorised', name: 'chris@titan' });
+    const granted: string = (taken.json() as { token: string }).token;
+    expect((await store.check(granted)).ok).toBe(true);
+    expect(await store.check(standing.token)).toEqual({ ok: false, why: 'unknown' });
+    await door.app.close();
+  });
+
+  it('a renewal that expired before chell collected it is refused, and the standing token from before stays', async () => {
+    // The standing token was minted under a longer life; the door now mints tokens that live a tenth of a second.
+    const longer: TokenStore = new TokenStore(join(tokensDir, 'short.json'), 30);
+    await longer.load();
+    const standing = await longer.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    const store: TokenStore = new TokenStore(join(tokensDir, 'short.json'), 0.1 / 86400);
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'short.json'), tokenDays: 0.1 / 86400 }, host, tokens: store, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    const { code } = (await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } })).json() as { code: string };
+    await door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    const polled = await door.app.inject({ method: 'GET', url: `/auth/device/${code}` });
+    expect(polled.statusCode).toBe(410);
+    expect(polled.json()).toMatchObject({ state: 'expired' });
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    expect((await store.check(standing.token)).ok).toBe(true);
+    await door.app.close();
+  });
+
+  it('a lapsed renewal whose drop fails is dropped at a later tick, and the standing token stays', async () => {
+    let failing: number = 1;
+    const store: TokenStore = new TokenStore(join(tokensDir, 'drops.json'), 30, (): Date => new Date(), {
+      read_after: async (): Promise<void> => { if (failing > 0) { failing -= 1; throw new Error('the store is busy'); } },
+    });
+    let clock: number = Date.now();
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'drops.json') }, host, tokens: store, now: (): number => clock, sweepMs: 20, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    await door.app.ready();
+    failing = 0;
+    const standing = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    const { code } = (await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } })).json() as { code: string };
+    await door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
+    expect(await store.list()).toHaveLength(2);
+    // The first drop fails; the code lapses; a later tick drops it.
+    failing = 1;
+    clock += 11 * 60 * 1000;
+    for (let i = 0; i < 100 && (await store.list()).length > 1; i++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    // The first drop threw (the hook spent its one failure), and a later tick dropped it.
+    expect(failing).toBe(0);
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    await door.app.close();
+  });
+
+  it('a code that expires during its mint, whose drop then fails, is dropped at a later tick and leaves the standing token', async () => {
+    let release: () => void = (): void => undefined;
+    let hold: boolean = false;
+    let fail: number = 0;
+    const store: TokenStore = new TokenStore(join(tokensDir, 'held-drop.json'), 30, (): Date => new Date(), {
+      read_after: async (): Promise<void> => {
+        if (hold) { hold = false; await new Promise<void>((resolve) => { release = resolve; }); return; }
+        if (fail > 0) { fail -= 1; throw new Error('the store is busy'); }
+      },
+    });
+    let clock: number = Date.now();
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'held-drop.json') }, host, tokens: store, now: (): number => clock, sweepMs: 20, mint: async (_c: string, username: string) => ({ token: `TOKEN-${username}` }) });
+    await door.app.ready();
+    const standing = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'chris@titan');
+    const { code } = (await door.app.inject({ method: 'POST', url: '/auth/device', payload: { host: 'titan' } })).json() as { code: string };
+    hold = true;
+    const login = door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json', origin: DOOR_ORIGIN }, payload: { username: 'chris', password: 'right', code } });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    // The code runs out while the mint is held, and the drop that follows fails once.
+    clock += 11 * 60 * 1000;
+    fail = 1;
+    release();
+    expect((await login).statusCode).toBe(410);
+    for (let i = 0; i < 100 && (await store.list()).length > 1; i++) await new Promise((resolve) => { setTimeout(resolve, 10); });
+    expect(fail).toBe(0);
+    expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
+    await door.app.close();
+  });
+
+  it('answers /healthz while a token login is held inside the store: store I/O does not hold the door', async () => {
+    let release: () => void = (): void => undefined;
+    let holding: boolean = false;
+    const held: Promise<void> = new Promise<void>((resolve) => { release = resolve; });
+    const store: TokenStore = new TokenStore(join(tokensDir, 'held.json'), 30, (): Date => new Date(), {
+      read_after: async (): Promise<void> => { if (!holding) return; await held; },
+    });
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: join(tokensDir, 'held.json') }, host, tokens: store, mint: async () => ({ token: 'T' }) });
+    const minted = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
+    host.found = up;
+    holding = true;
+    let loggedIn: boolean = false;
+    const login = door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${minted.token}` } })
+      .then((answer) => { loggedIn = true; return answer; });
+    await new Promise((resolve) => { setTimeout(resolve, 30); });
+    const health = await door.app.inject({ method: 'GET', url: '/healthz' });
+    expect(health.statusCode).toBe(200);
+    expect(loggedIn).toBe(false);
+    release();
+    expect((await login).statusCode).toBe(200);
+    await door.app.close();
+  });
+
+  it('a foreign token can neither list nor revoke at this door, and the local token stays', async () => {
+    const local = await built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
+    const foreign = await built.tokens.mint('chris@https://other.example.org/api/v1/', 'chris', 'laptop');
+    const listed = await built.app.inject({ method: 'GET', url: '/auth/tokens', headers: { authorization: `Bearer ${foreign.token}` } });
+    expect(listed.statusCode).toBe(401);
+    const revoked = await built.app.inject({ method: 'DELETE', url: '/auth/token', headers: { authorization: `Bearer ${foreign.token}` } });
+    expect(revoked.statusCode).toBe(401);
+    expect((await built.tokens.check(local.token)).ok).toBe(true);
+    expect((await built.tokens.check(foreign.token)).ok).toBe(true);
+    // The local token's logout ends it alone.
+    const out = await built.app.inject({ method: 'DELETE', url: '/auth/token', headers: { authorization: `Bearer ${local.token}` } });
+    expect(out.json()).toMatchObject({ revoked: true, name: 'laptop' });
+    expect(await built.tokens.check(local.token)).toEqual({ ok: false, why: 'unknown' });
+    expect((await built.tokens.check(foreign.token)).ok).toBe(true);
   });
 
   it('a password login held while a door-token login begins a restart on the saved login looks again, and does not note the berth it had found', async () => {
     const identity: string = 'chris@https://cube.example.org/api/v1/';
-    const minted = built.tokens.mint(identity, 'chris', 'laptop');
+    const minted = await built.tokens.mint(identity, 'chris', 'laptop');
     const old: Berth = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD' };
     let answer: (berth: Berth | null) => void = (): void => undefined;
     let looks: number = 0;
@@ -1039,7 +1239,7 @@ describe('door tokens (chell auth)', () => {
   });
 
   it('a token login with no session up boots one on the saved login (no CUBE token travels), and a password is never asked', async () => {
-    const minted = built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
+    const minted = await built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
     host.found = null;
     const byToken = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${minted.token}` } });
     expect(byToken.statusCode).toBe(200);
@@ -1060,9 +1260,9 @@ describe('door tokens (chell auth)', () => {
 
   it('a token login answers whose token it was, lists the identity\'s tokens by one of them, and the token in hand can end itself', async () => {
     host.found = up;
-    const mine = built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
-    built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'cron@titan');
-    built.tokens.mint('kim@https://cube.example.org/api/v1/', 'kim', 'laptop');
+    const mine = await built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
+    await built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'cron@titan');
+    await built.tokens.mint('kim@https://cube.example.org/api/v1/', 'kim', 'laptop');
     const byToken = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${mine.token}` } });
     expect(byToken.json()).toMatchObject({ state: 'attached', user: 'chris', tokenName: 'laptop' });
     const listed = await built.app.inject({ method: 'GET', url: '/auth/tokens', headers: { authorization: `Bearer ${mine.token}` } });
@@ -1073,7 +1273,7 @@ describe('door tokens (chell auth)', () => {
     expect(bare.statusCode).toBe(401);
     const revoked = await built.app.inject({ method: 'DELETE', url: '/auth/token', headers: { authorization: `Bearer ${mine.token}` } });
     expect(revoked.json()).toEqual({ revoked: true, name: 'laptop' });
-    expect(built.tokens.list().map((t) => `${t.user}/${t.name}`).sort()).toEqual(['chris/cron@titan', 'kim/laptop']);
+    expect((await built.tokens.list()).map((t) => `${t.user}/${t.name}`).sort()).toEqual(['chris/cron@titan', 'kim/laptop']);
     const again = await built.app.inject({ method: 'DELETE', url: '/auth/token', headers: { authorization: `Bearer ${mine.token}` } });
     expect(again.statusCode).toBe(401);
     expect(said.some((line) => line.includes('chris revoked their door token "laptop"'))).toBe(true);
@@ -1084,7 +1284,7 @@ describe('door tokens (chell auth)', () => {
     host.report = { state: 'booting', lines: [] };
     const first = await built.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json' }, payload: { username: 'chris', password: 'right' } });
     expect(first.json()).toMatchObject({ state: 'starting' });
-    const minted = built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
+    const minted = await built.tokens.mint('chris@https://cube.example.org/api/v1/', 'chris', 'laptop');
     const second = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json', authorization: `Bearer ${minted.token}` } });
     expect(second.json()).toMatchObject({ state: 'starting' });
     expect(host.spawned).toEqual([]);
@@ -1102,8 +1302,8 @@ describe('door tokens (chell auth)', () => {
 
     let now: number = Date.parse('2026-10-06T00:00:00Z');
     const store = new TokenStore(join(tokensDir, 'aged.json'), 1, (): Date => new Date(now));
-    store.load();
-    const aged = store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'old');
+    await store.load();
+    const aged = await store.mint('chris@https://cube.example.org/api/v1/', 'chris', 'old');
     now = Date.parse('2026-10-08T00:00:00Z');
     const lines: string[] = [];
     const door: PorterApp = await porterApp_build({ installed: {}, config, host, mint: async () => ({ token: 'x' }), tokens: store, log: (line: string): void => { lines.push(line); } });
@@ -1145,7 +1345,7 @@ describe('door tokens (chell auth)', () => {
     expect(grant.user).toBe('chris');
     expect(grant.name).toBe('chris@titan');
     expect(grant.token.startsWith('pdt_')).toBe(true);
-    expect(built.tokens.check(grant.token).ok).toBe(true);
+    expect((await built.tokens.check(grant.token)).ok).toBe(true);
 
     const spent = await built.app.inject({ method: 'GET', url: `/auth/device/${code}` });
     expect(spent.statusCode).toBe(404);

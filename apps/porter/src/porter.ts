@@ -8,11 +8,13 @@
  *
  * @module
  */
+import { existsSync } from 'node:fs';
+
 import { CredentialStore } from './creds.js';
 import { sessionEnv_withheld } from './host/sessionEnv.js';
 import { doorOrigins_resolve, type DoorOrigins } from './origin.js';
 import { porterConfig_resolve, porterStateDir_resolve, porterTokensFile_resolve, chellEntry_locate, stratusEntry_locate, PORTER_DEFAULT_TOKEN_DAYS, type PorterConfig } from './config.js';
-import { TokenStore, type DoorToken } from './tokens.js';
+import { TokenStore, type DoorToken, type MintedToken, type StoreHooks } from './tokens.js';
 import { identity_normalise } from '@fnndsc/calypso/berth';
 import { ProcessHost } from './host/processHost.js';
 import { LauncherHost } from './host/launcherHost.js';
@@ -93,6 +95,13 @@ async function session_end(stateDir: string, who: string): Promise<void> {
   if (ended) console.log('    state kept; the next login boots a fresh session on this porter\'s kernel');
 }
 
+/** The token CLI's word, on stderr, when upkeep after a committed change failed: the change stands. */
+const CLI_HOOKS: StoreHooks = {
+  upkeep_failed: (what: string, error: unknown): void => {
+    console.error(`[!] the change is made, but the token store could not write ${what}: ${error instanceof Error ? error.message : String(error)}; it is written at the next start`);
+  },
+};
+
 /**
  * Lists the door tokens the store holds: who, which name, when minted,
  * when it dies, when it last let someone in. There is no plaintext to
@@ -100,10 +109,10 @@ async function session_end(stateDir: string, who: string): Promise<void> {
  *
  * @param file - The token store.
  */
-function tokens_print(file: string): void {
-  const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS);
-  store.load();
-  const tokens: DoorToken[] = store.list();
+async function tokens_print(file: string): Promise<void> {
+  const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS, undefined, CLI_HOOKS);
+  await store.load();
+  const tokens: DoorToken[] = await store.list();
   console.log(`tokens: ${file}`);
   if (tokens.length === 0) {
     console.log('no door tokens');
@@ -126,10 +135,10 @@ function tokens_print(file: string): void {
  * @param user - The CUBE username.
  * @param name - The token's name, or undefined for all of the user's.
  */
-function token_revoke(file: string, user: string, name: string | undefined): void {
-  const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS);
-  store.load();
-  const gone: number = store.revoke(user, name);
+async function token_revoke(file: string, user: string, name: string | undefined): Promise<void> {
+  const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS, undefined, CLI_HOOKS);
+  await store.load();
+  const gone: number = await store.revoke(user, name);
   if (gone === 0) {
     console.error(`[!] no door token ${name === undefined ? `for ${user}` : `named "${name}" for ${user}`}; 'porter --tokens' lists them`);
     process.exit(1);
@@ -146,7 +155,7 @@ function token_revoke(file: string, user: string, name: string | undefined): voi
  * @param user - The CUBE username.
  * @param name - The token's name.
  */
-function token_mint(env: NodeJS.ProcessEnv, user: string, name: string): void {
+async function token_mint(env: NodeJS.ProcessEnv, user: string, name: string): Promise<void> {
   const cubeUrl: string | undefined = env['PORTER_CUBE_URL'];
   if (cubeUrl === undefined || cubeUrl.length === 0) {
     console.error('[!] --mint needs PORTER_CUBE_URL: the token is for an identity at one CUBE');
@@ -158,9 +167,9 @@ function token_mint(env: NodeJS.ProcessEnv, user: string, name: string): void {
     console.error(`[!] PORTER_TOKEN_DAYS is not a span of days: ${daysText}`);
     process.exit(1);
   }
-  const store: TokenStore = new TokenStore(porterTokensFile_resolve(env), days);
-  store.load();
-  const made: { token: string; record: DoorToken } = store.mint(identity_normalise(user, cubeUrl.endsWith('/') ? cubeUrl : `${cubeUrl}/`), user, name);
+  const store: TokenStore = new TokenStore(porterTokensFile_resolve(env), days, undefined, CLI_HOOKS);
+  await store.load();
+  const made: MintedToken = await store.mint(identity_normalise(user, cubeUrl.endsWith('/') ? cubeUrl : `${cubeUrl}/`), user, name);
   console.log(`minted a door token "${name}" for ${user}; it dies ${made.record.expires.slice(0, 10)} and is shown once:`);
   console.log(made.token);
   console.log('hand it over out of band; the script keeps it in ~/.config/chell/doors/<door-host>.json (0600) or CHELL_DOOR_TOKEN');
@@ -184,7 +193,7 @@ export const PORTER_USAGE: string = [
   'porter --status             the sessions this porter carries (--sessions says the same)',
   'porter --end <who>          end one session: its berth key, user, or user@cube',
   'porter --tokens             the door tokens the store holds: user, name, minted, dies, last used',
-  'porter --revoke <user> [<name>]   revoke one door token by name, or every one of the user\'s',
+  'porter --revoke <user> [<name>]   revoke the user\'s door tokens at every CUBE in this store: those of one name, or all',
   'porter --mint <user> --name <name>   mint a door token by hand (PORTER_CUBE_URL names the CUBE); shown once',
   'porter --creds <user> --oci <config> [--profile <name>]   file a user\'s OCI key under their ChRIS identity, for :stratus oci',
   'porter --version            the door\'s version and the session code it serves (-V)',
@@ -276,12 +285,18 @@ async function porter_start(): Promise<void> {
     process.exit(1);
   }
   if (ask.mode === 'help') { console.log(PORTER_USAGE); return; }
+  // Porter reaches its own folders through the handles it holds on them (/proc/self/fd), so a folder swapped
+  // under it is never written into: it needs Linux, and says so rather than run without that.
+  if (!existsSync('/proc/self/fd')) {
+    console.error('[!] porter needs Linux: it holds its folders open and reaches them through /proc/self/fd, which this host does not have');
+    process.exit(1);
+  }
   if (ask.mode === 'version') { console.log(versionReport_build()); return; }
   if (ask.mode === 'status') { await status_print(porterStateDir_resolve(process.env)); return; }
   if (ask.mode === 'end') { await session_end(porterStateDir_resolve(process.env), ask.who); return; }
-  if (ask.mode === 'tokens') { tokens_print(porterTokensFile_resolve(process.env)); return; }
-  if (ask.mode === 'revoke') { token_revoke(porterTokensFile_resolve(process.env), ask.user, ask.name); return; }
-  if (ask.mode === 'mint') { token_mint(process.env, ask.user, ask.name); return; }
+  if (ask.mode === 'tokens') { await tokens_print(porterTokensFile_resolve(process.env)); return; }
+  if (ask.mode === 'revoke') { await token_revoke(porterTokensFile_resolve(process.env), ask.user, ask.name); return; }
+  if (ask.mode === 'mint') { await token_mint(process.env, ask.user, ask.name); return; }
   if (ask.mode === 'creds') { creds_import(process.env, ask.user, ask.config, ask.profile); return; }
   let config: PorterConfig;
   try {

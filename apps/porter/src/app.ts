@@ -78,7 +78,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DOOR_COOKIE, doorCookie_options } from './door.js';
 import { loginPage_render, greetPage_render, authorisedPage_render } from './greeter.js';
-import { DeviceCodes, TokenStore, token_looksLike, type DeviceGrant, type DoorToken, type TokenCheck } from './tokens.js';
+import { DeviceCodes, TokenStore, token_looksLike, type DeviceClaim, type DeviceGrant, type RenewalOutcome, type DoorToken, type MintedToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
 import { AttemptLimit, HitLimit, VerdictCache, type Admission, type Attempt } from './limit.js';
 import { doorOrigins_resolve, method_isSafe, origin_isDoors, originRefusal_say, type DoorOrigins } from './origin.js';
@@ -332,9 +332,16 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     void registry.ending_run(key, (): Promise<void> => stopping, 'restart');
   };
   const creds: CredentialStore = new CredentialStore(config.stateDir);
-  const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays);
-  tokens.load();
-  const codes: DeviceCodes = options.codes ?? new DeviceCodes();
+  const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays, undefined, {
+    upkeep_failed: (what: string, error: unknown): void => { options.log?.(`the door's token store could not write ${what}: ${error instanceof Error ? error.message : String(error)}; it is written at the next start`); },
+  });
+  await tokens.load();
+  if (tokens.legacyNote !== null) options.log?.(tokens.legacyNote);
+  if (tokens.skipped.length > 0) options.log?.(`the door's token store holds ${String(tokens.skipped.length)} record(s) of the wrong shape, left out: ${tokens.skipped.join(', ')}`);
+  const codes: DeviceCodes = options.codes ?? new DeviceCodes(options.now);
+  // Renewals waiting to be dropped: those whose code lapsed untaken, and those a drop failed for, kept for the next tick.
+  let dropsHeld: MintedToken[] = [];
+  let dropping: boolean = false;
   // Who a request is from, and whether it came by https, is the socket's word unless the peer is a proxy
   // the operator named (`PORTER_TRUSTED_PROXIES`): only such a peer's forwarded headers are believed. A
   // peer nobody named that writes `X-Forwarded-For` is counted by its own address.
@@ -479,7 +486,12 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       await reply.code(401).send({ error: 'a door token is required (Authorization: Bearer …)' });
       return null;
     }
-    const checked: TokenCheck = tokens.check(bearer);
+    const checked: TokenCheck = await tokens.check(bearer);
+    // A token minted for another CUBE's identity is not this door's to answer for.
+    if (checked.ok && identity_normalise(checked.record.user, config.cubeUrl) !== checked.record.identity) {
+      await reply.code(401).send({ error: `the door token "${checked.record.name}" was minted for another CUBE than this door's` });
+      return null;
+    }
     if (!checked.ok) {
       await reply.code(401).send({ error: checked.why === 'expired' ? `the door token "${checked.record.name}" expired on ${checked.record.expires.slice(0, 10)}` : 'the door does not know that token' });
       return null;
@@ -493,7 +505,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     if (holder === null) return reply;
     return {
       user: holder.user,
-      tokens: tokens.list().filter((token: DoorToken): boolean => token.identity === holder.identity).map((token: DoorToken) => ({ name: token.name, created: token.created, expires: token.expires, lastUsed: token.lastUsed })),
+      tokens: (await tokens.list()).filter((token: DoorToken): boolean => token.identity === holder.identity).map((token: DoorToken) => ({ name: token.name, created: token.created, expires: token.expires, lastUsed: token.lastUsed })),
     };
   });
 
@@ -501,17 +513,33 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   app.delete('/auth/token', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
     const holder: DoorToken | null = await bearer_check(request, reply);
     if (holder === null) return reply;
-    tokens.revoke(holder.user, holder.name);
-    options.log?.(`${holder.user} revoked their door token "${holder.name}"`);
-    return { revoked: true, name: holder.name };
+    // The token in hand and only it, found again by its hash in the same change: a replacement of the same name stays.
+    const gone: DoorToken | null = await tokens.revoke_presented(bearer_extract(request) ?? '');
+    if (gone === null) return reply.code(401).send({ error: 'the door does not know that token (revoked, or minted elsewhere)' });
+    options.log?.(`${gone.user} revoked their door token "${gone.name}"`);
+    return { revoked: true, name: gone.name };
   });
 
   app.get('/auth/device/:code', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
     const code: string = (request.params as { code: string }).code;
-    const taken = codes.take(code);
-    if (taken.state === 'unknown') return reply.code(404).send({ state: 'unknown' });
-    if (taken.state === 'pending') return { state: 'pending' };
-    return { state: 'authorised', ...taken.grant };
+    const step = codes.handoff_begin(code);
+    if (step.state === 'unknown') return reply.code(404).send({ state: 'unknown' });
+    if (step.state === 'pending') return { state: 'pending' };
+    // The hand-over is where the renewal takes effect: settled in the store first, the grant handed only after,
+    // and the code kept for the next poll when the store could not say.
+    let outcome: RenewalOutcome | null = null;
+    try {
+      outcome = step.renewal === null ? null : await tokens.renewal_settle(step.renewal, true);
+    } catch (error: unknown) {
+      codes.handoff_end(code, false);
+      options.log?.(`a device login's token could not be settled: ${error instanceof Error ? error.message : String(error)}`);
+      // Pending, as every chell already reads it: it polls again, and the code waits for that poll.
+      return { state: 'pending' };
+    }
+    codes.handoff_end(code, true);
+    if (outcome?.state === 'superseded') return reply.code(410).send({ state: 'superseded', error: 'a newer login for this host replaced this one; run chell auth login again' });
+    if (outcome?.state === 'expired') return reply.code(410).send({ state: 'expired', error: 'the token this login made expired before chell collected it; run chell auth login again' });
+    return { state: 'authorised', ...step.grant };
   });
 
   app.post('/login', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -530,17 +558,21 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     let wanted: { tokenName?: string; code?: string } = {};
     if (bearer !== null) {
       if (!token_looksLike(bearer)) return refuse(401, 'that is not a door token');
-      const checked: TokenCheck = tokens.check(bearer);
+      // One change of the store, read afresh: found by its hash, alive, for the identity this door serves, its use noted.
+      const checked: TokenCheck = await tokens.login_authorize(bearer, (user: string): string => identity_normalise(user, config.cubeUrl));
       if (!checked.ok) {
         if (checked.why === 'expired') {
           options.log?.(`refused ${checked.record.user}'s door token "${checked.record.name}": it expired on ${checked.record.expires.slice(0, 10)}`);
           return refuse(401, `the door token "${checked.record.name}" expired on ${checked.record.expires.slice(0, 10)}; run chell auth login`);
         }
+        if (checked.why === 'foreign') {
+          options.log?.(`refused ${checked.record.user}'s door token "${checked.record.name}": it was minted for ${checked.record.identity}, not this door's CUBE`);
+          return refuse(401, `the door token "${checked.record.name}" was minted for another CUBE than this door's (${config.cubeUrl}); run chell auth login`);
+        }
         options.log?.('refused a door token nobody holds (revoked, or never minted here)');
         return refuse(401, 'the door does not know that token (revoked, or minted elsewhere); run chell auth login');
       }
       byToken = checked.record;
-      tokens.touch(byToken);
       username = byToken.user;
       cubeToken = null;
     } else {
@@ -597,17 +629,36 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       tries_tell(false);
       cubeToken = minted.token;
     }
-    const identity: string = identity_normalise(username, config.cubeUrl);
+    // A token's identity is the record's own, whole: never rebuilt from its username.
+    const identity: string = byToken !== null ? byToken.identity : identity_normalise(username, config.cubeUrl);
     // A device code: the human came to authorise a chell, not to open a
     // session here. The token is minted, handed to the waiting poll, and
     // the browser is told it can go.
     if (wanted.code !== undefined) {
-      const forHost: string | null = codes.host_find(wanted.code);
-      if (forHost === null) return refuse(410, `the code ${wanted.code} is not waiting (ten minutes, once); run chell auth login again`);
+      // Claimed before anything is awaited: a second submission of the same code is refused while this one mints.
+      const claimed: DeviceClaim | null = codes.code_claim(wanted.code);
+      if (claimed === null) return refuse(410, `the code ${wanted.code} is not waiting (ten minutes, once); run chell auth login again`);
+      const forHost: string = claimed.host;
       const name: string = `${username}@${forHost}`;
-      const made: { token: string; record: DoorToken } = tokens.mint(identity, username, name);
+      let made: MintedToken;
+      try {
+        // A renewal: the token this person already holds for that host stands until the new one is delivered.
+        made = await tokens.mint(identity, username, name, true);
+      } catch (error: unknown) {
+        codes.claim_release(wanted.code, claimed.claim);
+        throw error;
+      }
       const grant: DeviceGrant = { token: made.token, user: username, name, expires: made.record.expires };
-      codes.authorise(wanted.code, grant);
+      // Approved: the grant waits for chell's poll, and the token already held stands until that poll takes it.
+      // The code died while the token was minted: the new one goes alone.
+      if (!codes.authorise(wanted.code, claimed.claim, grant, made)) {
+        // A drop that fails here joins the sweep's: the undelivered token is tried again at the next tick, never forgotten.
+        await tokens.renewal_settle(made, false).catch((error: unknown): void => {
+          dropsHeld.push(made);
+          options.log?.(`a device login's undelivered token could not be dropped yet: ${error instanceof Error ? error.message : String(error)}; it is tried again`);
+        });
+        return refuse(410, `the code ${wanted.code} ran out while the door minted its token; run chell auth login again`);
+      }
       options.log?.(`minted a door token "${name}" for ${username} by device code (dies ${made.record.expires.slice(0, 10)})`);
       // A token boots a session on the login the session saved. A human who
       // never came through before has none, so this login, which holds a
@@ -630,7 +681,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // A password login asking for a token beside its session.
     let granted: { token: string; name: string; expires: string } | null = null;
     if (wanted.tokenName !== undefined) {
-      const made: { token: string; record: DoorToken } = tokens.mint(identity, username, wanted.tokenName);
+      const made: MintedToken = await tokens.mint(identity, username, wanted.tokenName);
       granted = { token: made.token, name: wanted.tokenName, expires: made.record.expires };
       options.log?.(`minted a door token "${wanted.tokenName}" for ${username} (dies ${made.record.expires.slice(0, 10)})`);
     }
@@ -1002,6 +1053,29 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
 
   // The session's wire: the upgrade is relayed byte for byte to the daemon,
   // with the token on the upgrade URL, which the daemon reads.
+  /**
+   * Drops lapsed renewals one at a time (a store of tokens is no place for a burst); a drop that fails is kept for
+   * the next tick and said, so a token nobody received never stands forgotten.
+   */
+  const lapsed_drop = async (): Promise<void> => {
+    if (dropping) return;
+    dropping = true;
+    try {
+      const batch: MintedToken[] = [...dropsHeld, ...codes.lapsed_take()];
+      dropsHeld = [];
+      for (const made of batch) {
+        try {
+          await tokens.renewal_settle(made, false);
+        } catch (error: unknown) {
+          dropsHeld.push(made);
+          options.log?.(`a lapsed device login's token could not be dropped yet: ${error instanceof Error ? error.message : String(error)}; it is tried again`);
+        }
+      }
+    } finally {
+      dropping = false;
+    }
+  };
+
   app.addHook('onReady', async (): Promise<void> => {
     app.server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer): void => {
       const split = mountUrl_split(request.url ?? '/');
@@ -1055,6 +1129,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // The idle sweep, once a minute for as long as the porter listens.
     const idleMs: number = config.idleHours * 3_600_000;
     const sweep: NodeJS.Timeout = setInterval((): void => {
+      // Renewals approved and never taken by a poll before their code lapsed: dropped, so nobody's token stands unreceived.
+      void lapsed_drop();
       // A sweep that fails is said, and the next tick sweeps again: it is never left as a rejection nobody hears.
       void idleSweep_run(registry, host, idleMs, options.log ?? ((): void => undefined)).catch((error: unknown): void => {
         options.log?.(`the idle sweep failed: ${error instanceof Error ? error.message : String(error)}`);
