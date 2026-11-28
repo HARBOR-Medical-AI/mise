@@ -63,12 +63,45 @@ export interface PlacedDelivery extends FileDeliverRequest {
  * ```
  */
 export function deliveryPlace_resolve(destination: string | undefined, filename: string): string {
+  return deliveryPlacement_resolve(destination, filename).place;
+}
+
+/**
+ * Where a delivered file goes here, and the folder it was placed in by its name (null: the destination is the file).
+ *
+ * @example
+ * ```ts
+ * const placed: DeliveryPlacement = { place: '/home/me/out/a.txt', folder: '/home/me/out' };
+ * ```
+ */
+export interface DeliveryPlacement {
+  /** The absolute path the file is written to. */
+  place: string;
+  /** The folder the file's name was placed inside, or null when the destination named the file itself. */
+  folder: string | null;
+}
+
+/**
+ * Resolves where a delivered file goes here, and how: inside a folder by its name, or as the file the destination
+ * names. See `deliveryPlace_resolve`.
+ *
+ * @param destination - The destination the session named, or none (the working directory).
+ * @param filename - The file's name inside the source.
+ * @returns The place, and the folder it was placed in.
+ * @throws {Error} When the name has no place inside its folder.
+ *
+ * @example
+ * ```ts
+ * deliveryPlacement_resolve('./out', 'a.txt'); // { place: '/home/me/out/a.txt', folder: '/home/me/out' }
+ * ```
+ */
+export function deliveryPlacement_resolve(destination: string | undefined, filename: string): DeliveryPlacement {
   const given: boolean = destination !== undefined && destination.length > 0;
   const resolved: string = given ? path.resolve(destination as string) : process.cwd();
   if (given && !(existsSync(resolved) && statSync(resolved).isDirectory())) {
-    return resolved;
+    return { place: resolved, folder: null };
   }
   const placed: HostPlace = wireName_place(resolved, filename);
   if (!placed.ok) throw new Error(`refused: the name ${placed.reason}; nothing was written`);
-  return placed.place;
+  return { place: placed.place, folder: resolved };
 }

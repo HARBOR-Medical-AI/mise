@@ -72,14 +72,16 @@ export class TerminalOwner {
       return this.handBack_make();
     }
     await new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
-      const waiter: Waiter = { who, turn_give: (): void => { resolve(); } };
-      this.waiting.push(waiter);
-      signal?.addEventListener('abort', (): void => {
+      const wait_withdraw = (): void => {
         const at: number = this.waiting.indexOf(waiter);
         if (at < 0) return;
         this.waiting.splice(at, 1);
         reject(new Error('withdrawn: the terminal was not taken'));
-      }, { once: true });
+      };
+      // The withdrawal listener goes with the wait: a shared signal does not gather one per question.
+      const waiter: Waiter = { who, turn_give: (): void => { signal?.removeEventListener('abort', wait_withdraw); resolve(); } };
+      this.waiting.push(waiter);
+      signal?.addEventListener('abort', wait_withdraw, { once: true });
     });
     return this.handBack_make();
   }

@@ -201,6 +201,33 @@ describe('persistent prompting (REPL interface)', () => {
     expect(typeahead_count()).toBe(0);
   });
 
+  it('a secret withdrawn with the cursor mid-entry is neither printed nor recoverable, on a real terminal readline', async () => {
+    const realReadline = jest.requireActual('readline') as typeof import('readline');
+    const { PassThrough } = await import('node:stream');
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let shown: string = '';
+    output.on('data', (chunk: Buffer) => { shown += chunk.toString(); });
+    const rl = realReadline.createInterface({ input, output, terminal: true });
+    const stdout = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const gone = new AbortController();
+    const asking: Promise<string> = cliSurface_create(rl).prompt({ message: 'Password: ', hidden: true, signal: gone.signal });
+    input.write('hunter2');
+    input.write('\u001b[D\u001b[D\u001b[D');
+    await new Promise((r) => setTimeout(r, 20));
+    gone.abort();
+    await expect(asking).rejects.toThrow('withdrawn');
+    stdout.mockRestore();
+    expect(shown).not.toMatch(/hun|ter|r2/);
+    expect(rl.line).toBe('');
+    // Neither yank (Ctrl-Y) nor undo (Ctrl-_ ) brings any of it back.
+    const after: Promise<string> = new Promise((resolve) => { rl.question('Next: ', resolve); });
+    input.write('\u0019\u001f\r');
+    expect(await after).toBe('');
+    expect(shown).not.toMatch(/hun|ter|r2/);
+    rl.close();
+  });
+
   it('a line half typed at the prompt is not the start of a consent answer, on a real terminal readline', async () => {
     const realReadline = await import('node:readline');
     const { PassThrough } = await import('node:stream');

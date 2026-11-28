@@ -68,6 +68,18 @@ describe('l for a delivery', () => {
   });
 });
 
+describe('l for a delivery to a file the destination names', () => {
+  it('covers that file only: another named file in the same folder is asked again', async () => {
+    const out: string = mkdtempSync(join(tmpdir(), 'desk-out-'));
+    const { desk, questions, written } = desk_make(['l', 'n']);
+    desk.line_open('1', 'play fetch.sh', NOTHING, []);
+    await desk.deliver_run('d1', '1', { path: '/home/u/X/a.txt', filename: 'a.txt', destination: join(out, 'x.txt'), source: '/home/u/X/a.txt' });
+    await desk.deliver_run('d2', '1', { path: '/home/u/X/a.txt', filename: 'a.txt', destination: join(out, 'y.txt'), source: '/home/u/X/a.txt' });
+    expect(questions).toHaveLength(2);
+    expect(written).toEqual(['/home/u/X/a.txt']);
+  });
+});
+
 describe('a program handed the terminal', () => {
   it('is never handed it when it ended while its hand-over waited for an answer', async () => {
     const started: string[] = [];

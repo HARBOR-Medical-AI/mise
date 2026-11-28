@@ -8,10 +8,21 @@ import { fileURLToPath } from 'node:url';
 
 const script: string = fileURLToPath(new URL('./support/consentTty.mjs', import.meta.url));
 
+/** What a run reported: the answer read, or why the question failed, how soon, and whether raw mode was left on. */
+interface TtyReport {
+  answer?: string | null;
+  failed?: { reason: string; ms: number; raw: boolean };
+}
+
+/** Runs the question on a pseudo-terminal in a mode; see `support/consentTty.mjs`. */
+function tty_run(ahead: string, mode: string = 'answer'): TtyReport {
+  const run = spawnSync(process.execPath, [script, JSON.stringify(ahead), mode], { encoding: 'utf8', timeout: 20_000 });
+  return JSON.parse(run.stdout.trim().split('\n').pop() ?? '{}') as TtyReport;
+}
+
 /** Types `ahead` before the question and `n` after it; returns what the question read. */
-function answer_read(ahead: string): string | null {
-  const run = spawnSync(process.execPath, [script, JSON.stringify(ahead)], { encoding: 'utf8', timeout: 20_000 });
-  return (JSON.parse(run.stdout.trim().split('\n').pop() ?? '{}') as { answer: string | null }).answer;
+function answer_read(ahead: string): string | null | undefined {
+  return tty_run(ahead).answer;
 }
 
 describe('a one-shot consent question on a terminal', () => {
@@ -21,5 +32,18 @@ describe('a one-shot consent question on a terminal', () => {
 
   it('half a line typed before it is not the start of its answer', () => {
     expect(answer_read('y')).toBe('n');
+  }, 30_000);
+
+  it('withdrawn while what was typed is being dropped, it fails at once and leaves the terminal as it was', () => {
+    const report: TtyReport = tty_run('y', 'withdraw');
+    expect(report.failed?.reason).toBe('the question was withdrawn');
+    expect(report.failed?.ms).toBeLessThan(800);
+    expect(report.failed?.raw).toBe(false);
+  }, 30_000);
+
+  it('a terminal still being typed into after a second is refused, not asked', () => {
+    const report: TtyReport = tty_run('', 'noisy');
+    expect(report.failed?.reason).toContain('still being typed into');
+    expect(report.failed?.raw).toBe(false);
   }, 30_000);
 });

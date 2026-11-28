@@ -22,18 +22,19 @@
  * @module
  */
 
+import { createHash } from 'node:crypto';
+import * as path from 'node:path';
+
 import { deliveryIntent_matches, deliverySource_matches, type DeliveredFile, type DeliveryIntent, type LineHostOperations } from '@fnndsc/brasa';
 import type { FileDeliverRequest, FileDeliverResult } from '@fnndsc/menu';
 import type { LocalEditResult } from '@fnndsc/menu/surface';
 import chalk from 'chalk';
-import { createHash } from 'node:crypto';
-import * as path from 'node:path';
 
 import { consentText_quote, type ConsentKind, type HostConsent } from './hostConsent.js';
 import { HostGrantBook, type HostAsk } from './hostGrants.js';
 import type { HostPtyRelay } from './hostPty.js';
 import type { TerminalOwner } from './terminalOwner.js';
-import { deliveryPlace_resolve, type PlacedDelivery } from '../core/deliveryPlace.js';
+import { deliveryPlacement_resolve, type DeliveryPlacement, type PlacedDelivery } from '../core/deliveryPlace.js';
 
 /**
  * What the desk runs requests with, and how it answers.
@@ -93,8 +94,10 @@ export class HostDesk {
   private readonly ptyByLine: Map<string, string> = new Map();
   /** Request ids already answered on this connection, each by a fixed-size digest: each is answered once. */
   private readonly answered: Set<string> = new Set();
-  /** Programs asked to be handed the terminal and not yet handed it; one that ends meanwhile is never handed it. */
+  /** Programs asked to be handed the terminal and not yet handed it (received, held, or awaiting an answer). */
   private readonly ptyPending: Set<string> = new Set();
+  /** Of those, the ones that ended before they were handed it: never handed it. */
+  private readonly ptyEnded: Set<string> = new Set();
   /** The hand-back of the terminal for each program it is handed to. */
   private readonly ptyRelease: Map<string, () => void> = new Map();
 
@@ -138,6 +141,9 @@ export class HostDesk {
     if (lineId === undefined) {
       this.grants.all_close();
       this.options.consent.all_close();
+      // No hand-over waits any more: one still in flight finds nothing pending and is refused.
+      this.ptyPending.clear();
+      this.ptyEnded.clear();
     }
     for (const one of lines) {
       this.intents.delete(one);
@@ -252,11 +258,12 @@ export class HostDesk {
       this.id_take('deliver', deliverId);
       if (!this.options.file_deliver) throw new Error('this surface cannot receive a file');
       // Placed here, or refused, before anything else: a name with no place inside its folder never runs.
-      const place: string = deliveryPlace_resolve(request.destination, request.filename);
+      const placement: DeliveryPlacement = deliveryPlacement_resolve(request.destination, request.filename);
+      const place: string = placement.place;
       const refused: DeliveryRefusal | null = this.delivery_check(lineId, request);
       // `l` for a delivery covers one folder here and files from inside one source; a file not inside the source it
       // names is offered for this once only.
-      const scope: string | null = deliveryScope_read(place, request);
+      const scope: string | null = deliveryScope_read(placement, request);
       const line: string | undefined = refused === null
         ? lineId
         : await this.consent_require(lineId, refused.reason, refused.askable, 'deliver', `write the file ${text_quote(request.filename)} from the session's ${text_quote(request.path)} (its source ${text_quote(request.source ?? 'not named')}${scope === null ? ', which it is not inside' : ''}) to ${text_quote(place)} on this machine`, scope ?? undefined, scope === null);
@@ -288,6 +295,7 @@ export class HostDesk {
   public async hostPty_start(ptyId: string, lineId: string | undefined, command: string | undefined): Promise<void> {
     try {
       this.id_take('pty', ptyId);
+      if (this.ptyEnded.delete(ptyId)) throw new Error('refused: the program ended before it was handed the terminal; nothing was handed over');
       if (this.options.hostPty === null) throw new Error('refused: this chell has no terminal to hand over; nothing was handed over');
       if (command === undefined) throw new Error('refused: the session asked to hand this terminal to a program it did not name; nothing was handed over');
       // Granted, the terminal is handed over at once (the program's first output follows straight after);
@@ -299,7 +307,7 @@ export class HostDesk {
         : await this.consent_require(lineId, refusal, this.line_effective(lineId) !== undefined, 'pty', `hand this terminal to the program ${text_quote(command)}, which runs on the session's machine and receives every key typed here until it ends`);
       if (line === undefined) throw new Error(refusal ?? 'refused: no line');
       // A program that ended while its hand-over waited is not handed the terminal.
-      if (!this.ptyPending.delete(ptyId)) throw new Error('refused: the program ended before it was handed the terminal; nothing was handed over');
+      if (this.ptyEnded.delete(ptyId) || !this.ptyPending.delete(ptyId)) throw new Error('refused: the program ended before it was handed the terminal; nothing was handed over');
       // The terminal is handed over only when it is free (after any question or command holding it), and stays the
       // program's until it ends or its line does.
       const terminal_release: (() => void) | null = this.options.owner.terminal_tryTake('pty');
@@ -316,6 +324,8 @@ export class HostDesk {
       this.ptyPending.delete(ptyId);
       this.options.notice_show(chalk.red(`[!] ${reason}`));
       this.options.message_send({ type: 'hostPtyRefuse', ptyId, reason });
+    } finally {
+      this.ptyEnded.delete(ptyId);
     }
   }
 
@@ -339,6 +349,36 @@ export class HostDesk {
   }
 
   /**
+   * A program the session asks to hand the terminal to has been received (perhaps held behind a question): its end,
+   * if it comes first, cancels the hand-over.
+   *
+   * @param ptyId - The program's id.
+   *
+   * @example
+   * ```ts
+   * desk.pty_announce('p1');
+   * ```
+   */
+  public pty_announce(ptyId: string): void {
+    this.ptyPending.add(ptyId);
+  }
+
+  /**
+   * A received hand-over that will not be processed (refused at the hold's bound): forgotten.
+   *
+   * @param ptyId - The program's id.
+   *
+   * @example
+   * ```ts
+   * desk.pty_forget('p1');
+   * ```
+   */
+  public pty_forget(ptyId: string): void {
+    this.ptyPending.delete(ptyId);
+    this.ptyEnded.delete(ptyId);
+  }
+
+  /**
    * The terminal is free again: the program it was handed to has ended.
    *
    * @param ptyId - The program's id.
@@ -349,7 +389,8 @@ export class HostDesk {
    * ```
    */
   public pty_end(ptyId: string): void {
-    this.ptyPending.delete(ptyId);
+    // Received and not yet handed over: it never will be.
+    if (this.ptyPending.delete(ptyId)) this.ptyEnded.add(ptyId);
     this.ptyRelease.get(ptyId)?.();
     this.ptyRelease.delete(ptyId);
   }
@@ -515,16 +556,16 @@ function editSuffix_read(named: string | undefined): string {
 }
 
 /**
- * What `l` for a delivery covers: the folder here the file goes into and the source it comes from, when the file
- * is inside that source by its path and its name is its path inside it; else null (it is offered once only).
+ * What `l` for a delivery covers: where it goes here (a file the destination names, by its exact path; else the
+ * folder files are placed in by name) and the source it comes from, when the file is that source or is at its name
+ * inside it (as brasa shapes it); else null (it is offered once only).
  *
- * @param place - Where it goes, resolved here.
+ * @param placement - Where it goes, resolved here.
  * @param request - The delivery.
  * @returns The scope, or null.
  */
-function deliveryScope_read(place: string, request: FileDeliverRequest): string | null {
+function deliveryScope_read(placement: DeliveryPlacement, request: FileDeliverRequest): string | null {
   if (request.source === undefined || request.source.length === 0) return null;
-  // Shaped as brasa shapes it: the file is the source itself, or is at its name inside the source.
   const parts: string[] = request.filename.split('/');
   if (request.filename.length === 0 || parts.some((part: string): boolean => part === '' || part === '.' || part === '..')) return null;
   const normalised: string = path.posix.normalize(request.source);
@@ -532,8 +573,6 @@ function deliveryScope_read(place: string, request: FileDeliverRequest): string 
   const from: string = path.posix.normalize(request.path);
   const inside: boolean = (from === root && path.posix.basename(root) === request.filename) || from === `${root === '/' ? '' : root}/${request.filename}`;
   if (!inside) return null;
-  const local: string = path.resolve(place);
-  const tail: string = `${path.sep}${parts.join(path.sep)}`;
-  const folder: string = local.endsWith(tail) ? local.slice(0, local.length - tail.length) : path.dirname(local);
-  return `${folder}\u0000${root}`;
+  const here: string = placement.folder === null ? `file\u0000${placement.place}` : `folder\u0000${placement.folder}`;
+  return `${here}\u0000${root}`;
 }

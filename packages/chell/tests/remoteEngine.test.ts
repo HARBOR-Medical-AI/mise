@@ -1241,6 +1241,41 @@ describe('RemoteEngine live output', () => {
       };
     };
 
+    it('a hand-over held behind another line\'s question is cancelled by its program\'s end, while its line runs on', async () => {
+      const input = Object.assign(new EventEmitter(), { isTTY: true, isRaw: false, setRawMode(mode: boolean): void { input.isRaw = mode; }, resume(): void { /* flowing */ } });
+      const output = Object.assign(new EventEmitter(), { isTTY: true, columns: 120, rows: 40, write(): boolean { return true; } });
+      let answer_give: ((typed: string) => void) | null = null;
+      const onConsent = (_question: string): Promise<string> => new Promise<string>((resolve) => { answer_give = resolve; });
+      let raws: number = 0;
+      const setRaw = input.setRawMode.bind(input);
+      input.setRawMode = (mode: boolean): void => { if (mode) raws += 1; setRaw(mode); };
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          if (sent.line === 'play build.sh') {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: `${id}-0`, command: 'make', lineId: id })));
+            setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 60);
+            return;
+          }
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyStart', ptyId: 'p2', lineId: id, command: 'tty; read x' })));
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'hostPtyExit', ptyId: 'p2', code: 0 })));
+          setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 80);
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: async (): Promise<number> => 0, consentAsk: onConsent, terminal: { input, output, term: 'xterm' } });
+      const ws = FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket;
+      const first: Promise<unknown> = remote.line_execute('play build.sh');
+      await new Promise((r) => setTimeout(r, 15));
+      const second: Promise<unknown> = remote.line_execute('!tty; read x');
+      await new Promise((r) => setTimeout(r, 20));
+      // The second line is still running when the question closes and the held hand-over is handled.
+      (answer_give as unknown as (typed: string) => void)('n');
+      await Promise.all([first, second]);
+      expect(raws).toBe(0);
+      expect(ws.sent.find((one) => one.type === 'hostPtyRefuse' && one.ptyId === 'p2')?.reason).toContain('ended before it was handed the terminal');
+    });
+
     it('a failed line is shown only once an open question closes', async () => {
       let answer_give: ((typed: string) => void) | null = null;
       const onConsent = (_question: string): Promise<string> => new Promise<string>((resolve) => { answer_give = resolve; });

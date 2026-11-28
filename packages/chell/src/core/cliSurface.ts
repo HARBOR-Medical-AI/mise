@@ -125,6 +125,7 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
       // nobody will type.
       const abandon: AbortController = new AbortController();
       const onInterrupt = (): void => {
+        request.signal?.removeEventListener('abort', question_withdraw);
         question_openSet(false);
         terminalState_mark('busy');
         process.stdout.write('\n');
@@ -166,11 +167,13 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
     // Withdrawn by whoever asked (the connection closed): the entry goes, unread, and echo comes back.
     const abandon: AbortController = new AbortController();
     const secret_withdraw = (): void => {
+      // Discarded whole while output is still muted, with no editing key: nothing is redrawn, killed or undoable.
+      entry_discard(rl);
+      abandon.abort();
+      entry_discard(rl);
       Reflect.set(rl, '_writeToOutput', originalWrite);
-      if (rl.terminal) rl.write(null, { ctrl: true, name: 'u' });
       terminalState_mark('busy');
       process.stdout.write('\n');
-      abandon.abort();
       reject(new Error('the question was withdrawn'));
     };
     if (request.signal?.aborted === true) {
@@ -259,24 +262,84 @@ const SETTLE_MAX_MS: number = 1000;
  * Not a terminal: nothing to do.
  *
  * @param input - The input.
+ * @param signal - Withdraws the question: the drop stops, and the question fails.
  * @returns When the terminal is quiet.
+ * @throws {Error} When withdrawn, or when the terminal is still being typed into at the deadline.
  */
-async function terminalInput_settle(input: NodeJS.ReadableStream): Promise<void> {
+async function terminalInput_settle(input: NodeJS.ReadableStream, signal?: AbortSignal): Promise<void> {
   if (!(input instanceof ReadStream)) return;
   const wasRaw: boolean = input.isRaw;
-  input.setRawMode(true);
   const started: number = Date.now();
   let last: number = started;
   // Every chunk is dropped; its arrival only puts the question off.
   const chunk_drop = (): void => { last = Date.now(); };
-  input.on('data', chunk_drop);
-  input.resume();
-  while (Date.now() - last < SETTLE_QUIET_MS && Date.now() - started < SETTLE_MAX_MS) {
-    await new Promise<void>((done: () => void): void => { setTimeout(done, 10); });
+  try {
+    input.setRawMode(true);
+    input.on('data', chunk_drop);
+    input.resume();
+    while (Date.now() - last < SETTLE_QUIET_MS && Date.now() - started < SETTLE_MAX_MS && signal?.aborted !== true) {
+      await new Promise<void>((done: () => void): void => { setTimeout(done, 10); });
+    }
+  } finally {
+    input.off('data', chunk_drop);
+    input.pause();
+    input.setRawMode(wasRaw);
   }
-  input.off('data', chunk_drop);
-  input.pause();
-  input.setRawMode(wasRaw);
+  withdrawal_check(signal);
+  if (Date.now() - last < SETTLE_QUIET_MS) throw new Error('refused: the terminal was still being typed into when the question was to be put; nothing was asked');
+}
+
+/**
+ * Refuses a question already withdrawn.
+ *
+ * @param signal - The withdrawal, if any.
+ * @throws {Error} When it has been withdrawn.
+ */
+function withdrawal_check(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw new Error('the question was withdrawn');
+}
+
+/**
+ * Reads one answer on an interface that a withdrawal closes: refused at once if already withdrawn, and the
+ * withdrawal listener removed once it settles.
+ *
+ * @param rl - The interface.
+ * @param signal - The withdrawal, if any.
+ * @param reader - Reads the answer.
+ * @returns The answer.
+ * @throws {Error} When withdrawn, or when reading fails.
+ */
+async function withdrawable_read(rl: readline.Interface, signal: AbortSignal | undefined, reader: () => Promise<string>): Promise<string> {
+  const question_withdraw = (): void => { rl.close(); };
+  if (signal?.aborted === true) {
+    rl.close();
+    throw new Error('the question was withdrawn');
+  }
+  signal?.addEventListener('abort', question_withdraw, { once: true });
+  try {
+    return await reader();
+  } catch (error: unknown) {
+    // (Read afresh: it is withdrawn while the answer is awaited.)
+    withdrawal_check(signal);
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', question_withdraw);
+  }
+}
+
+/**
+ * Empties readline's entry and its undo and redo history, so a withdrawn secret can be neither shown nor recovered.
+ *
+ * @param rl - The interface.
+ */
+function entry_discard(rl: readline.Interface): void {
+  Reflect.set(rl, 'line', '');
+  Reflect.set(rl, 'cursor', 0);
+  for (const key of Object.getOwnPropertySymbols(rl)) {
+    if (key.description !== '_undoStack' && key.description !== '_redoStack') continue;
+    const stack: unknown = Reflect.get(rl, key);
+    if (Array.isArray(stack)) stack.length = 0;
+  }
 }
 
 /**
@@ -300,13 +363,12 @@ export async function oneShotPrompt_ask(request: PromptRequest, input: NodeJS.Re
     // What was typed before a question about what a session may run is not its answer: dropped unread, what Node
     // holds and, on a terminal, what the terminal still holds (a whole line or half of one).
     if (request.purpose === CONSENT_PURPOSE) {
+      withdrawal_check(request.signal);
       input_drain(input);
-      await terminalInput_settle(input);
+      await terminalInput_settle(input, request.signal);
     }
     const rl: readline.Interface = readline.createInterface({ input, output: process.stdout });
-    // Withdrawn by whoever asked: the interface closes and the question fails.
-    request.signal?.addEventListener('abort', (): void => { rl.close(); }, { once: true });
-    const answer: string = await oneShotLine_read(rl, shown.message, (): void => undefined);
+    const answer: string = await withdrawable_read(rl, request.signal, (): Promise<string> => oneShotLine_read(rl, shown.message, (): void => undefined));
     return promptAnswer_take(answer, shown.fallback);
   }
 
@@ -316,9 +378,8 @@ export async function oneShotPrompt_ask(request: PromptRequest, input: NodeJS.Re
     },
   });
   const rl: readline.Interface = readline.createInterface({ input, output: muted, terminal: true });
-  request.signal?.addEventListener('abort', (): void => { rl.close(); }, { once: true });
   process.stdout.write(request.message);
-  const secret: string = await oneShotLine_read(rl, '', (): void => { process.stdout.write('\n'); });
+  const secret: string = await withdrawable_read(rl, request.signal, (): Promise<string> => oneShotLine_read(rl, '', (): void => { process.stdout.write('\n'); }));
   return secret.trim();
 }
 

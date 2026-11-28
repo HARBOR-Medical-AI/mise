@@ -18,6 +18,7 @@ import type { BrasaEngine, CompletionResult } from '@fnndsc/brasa';
 import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type FileDeliverResult } from '@fnndsc/menu';
 import { builtinCommand_has, coreCommand_has, deliveryIntents_read, lineHostOperations_read, sourceIntents_settle, envelope_deliver, sink_get, sink_set, surface_set, type EngineRuns, type WordRoute, type LineHostOperations, type OutputSink, type Surface } from '@fnndsc/brasa';
 import type { LocalEditResult } from '@fnndsc/menu/surface';
+import { HeldOutput } from './heldOutput.js';
 import { HostConsent, type ConsentAsk } from './hostConsent.js';
 import { HostDesk, type HostDeskOptions } from './hostDesk.js';
 import { promptFromContext_render } from '../core/prompt/session.js';
@@ -105,10 +106,8 @@ export class RemoteEngine implements BrasaEngine {
   private readonly desk: HostDesk;
   /** The person's word for what no grant covers. */
   private readonly consent: HostConsent;
-  /** The session's messages held while a question is put to the person, and how many bytes they hold. */
-  private readonly held: Buffer[] = [];
-  private heldBytes: number = 0;
-  private heldDropped: boolean = false;
+  /** What the session says, and this chell would note, while a question is put to the person. */
+  private readonly hold: HeldOutput;
   /** Who holds this chell's terminal: a question, a command, the editor, a handed-over program, a prompt. */
   private readonly owner: TerminalOwner = new TerminalOwner();
   private readonly onClosing: ((cause: ClosingCause) => void) | undefined;
@@ -169,7 +168,12 @@ export class RemoteEngine implements BrasaEngine {
       : null;
     this.consent = new HostConsent(options.consentAsk ?? null, options.allowHostRequests ?? false, this.owner);
     // What the session said while a question was open is shown once it is answered, in order.
-    this.consent.idle_set((): void => { this.held_flush(); });
+    this.hold = new HeldOutput({
+      question_isOpen: (): boolean => this.consent.question_isOpen(),
+      message_handle: (payload: Buffer): void => { this.message_handle(payload); },
+      overflow_answer: (raw: unknown): boolean => this.overflow_answer(raw),
+    });
+    this.consent.idle_set((): void => { this.hold.items_flush(); });
     this.desk = new HostDesk({
       message_send: (message: Record<string, unknown>): void => { this.ws.send(JSON.stringify(message)); },
       consent: this.consent,
@@ -200,33 +204,13 @@ export class RemoteEngine implements BrasaEngine {
   }
 
   /**
-   * Holds a message of the session's while a question is open, within a bound; past it, the rest is dropped and
-   * said once after the answer, never covering the question.
-   *
-   * @param payload - The message.
-   * @param raw - It, parsed, so what cannot wait is answered past the bound.
-   * @returns True when it was held (or dropped), so it is not handled now.
-   */
-  private held_take(payload: Buffer, raw: unknown): boolean {
-    if (!this.consent.question_isOpen()) return false;
-    if (this.heldBytes + payload.length > HELD_BYTES_MAX) {
-      // Past the bound: output is dropped (said once after), but what needs an answer or ends something is
-      // answered now, never dropped and never replayed late.
-      this.held_overflow(raw);
-      return true;
-    }
-    this.held.push(payload);
-    this.heldBytes += payload.length;
-    return true;
-  }
-
-  /**
    * Answers a message that cannot wait past the hold's bound: the session's question is refused, a hand-over
-   * refused, a program's end taken now; anything else is dropped.
+   * refused, a program's end taken now; anything else may be dropped.
    *
    * @param raw - The parsed message.
+   * @returns True when it was answered; false when it may be dropped.
    */
-  private held_overflow(raw: unknown): void {
+  private overflow_answer(raw: unknown): boolean {
     const held: object = typeof raw === 'object' && raw !== null ? raw : {};
     const type: unknown = Reflect.get(held, 'type');
     const promptId: unknown = Reflect.get(held, 'promptId');
@@ -234,24 +218,15 @@ export class RemoteEngine implements BrasaEngine {
     if (type === 'prompt' && typeof promptId === 'string') {
       this.ws.send(JSON.stringify({ type: 'promptError', promptId, reason: 'this terminal is answering another question' }));
     } else if (type === 'hostPtyStart' && typeof ptyId === 'string') {
+      this.desk.pty_forget(ptyId);
       this.ws.send(JSON.stringify({ type: 'hostPtyRefuse', ptyId, reason: 'refused: this terminal is answering another question; nothing was handed over' }));
     } else if (type === 'hostPtyExit' && typeof ptyId === 'string') {
       this.hostPty?.exit(ptyId);
       this.desk.pty_end(ptyId);
     } else {
-      this.heldDropped = true;
+      return false;
     }
-  }
-
-  /** Handles, in order, what the session said while a question was open. */
-  private held_flush(): void {
-    const held: Buffer[] = this.held.splice(0);
-    this.heldBytes = 0;
-    for (const payload of held) this.message_handle(payload);
-    if (this.heldDropped) {
-      this.heldDropped = false;
-      console.error(chalk.yellow('[!] some of the session\'s output while the question was open was more than this chell holds, and was not shown'));
-    }
+    return true;
   }
 
   /**
@@ -402,13 +377,14 @@ export class RemoteEngine implements BrasaEngine {
   }
 
   /**
-   * Shows a note to the person, never over an open question: after it, when one is open.
+   * Shows a note to the person, never over an open question (after it, within the same bound), never once closed.
    *
    * @param text - The note.
    */
   private notice_show(text: string): void {
-    void this.consent.idle_wait().then((): void => { console.error(text); });
+    this.hold.notice_show(text);
   }
+
 
   /**
    * The exit status of the last line this surface ran on the daemon, as
@@ -449,8 +425,7 @@ export class RemoteEngine implements BrasaEngine {
       // The session's own questions, waiting or open, are withdrawn: no answer goes to a closed connection.
       this.connectionGone.abort();
       // What the session said before it went is not replayed after.
-      this.held.length = 0;
-      this.heldBytes = 0;
+      this.hold.hold_close();
     }
     this.desk.line_retire(lineId);
   }
@@ -503,9 +478,12 @@ export class RemoteEngine implements BrasaEngine {
    */
   private message_handle(payload: Buffer): void {
     const raw: unknown = safeJson_parse(payload.toString());
+    // A hand-over received is registered before it may be held, so the program's end, which is never held, cancels it.
+    const announced: unknown = typeof raw === 'object' && raw !== null && Reflect.get(raw, 'type') === 'hostPtyStart' ? Reflect.get(raw, 'ptyId') : undefined;
+    if (typeof announced === 'string') this.desk.pty_announce(announced);
     // While a question is put to the person, the terminal is the question's: what the session says waits, except
     // a line's end (which answers its questions) and its requests (which wait their own turn).
-    if (!held_passes(raw) && this.held_take(payload, raw)) return;
+    if (this.hold.message_take(payload, raw)) return;
     const parsed = serverMessage_parse(raw);
     if (!parsed.ok || parsed.value === undefined) {
       // A well-formed message of a type this client does not know is a
@@ -745,23 +723,6 @@ function safeJson_parse(text: string): unknown {
   } catch {
     return undefined;
   }
-}
-
-/** The most bytes of the session's messages held while a question is open. */
-const HELD_BYTES_MAX: number = 1024 * 1024;
-
-/** Messages that are never held while a question is open: a line's end, and requests (which queue their own). */
-const HELD_PASSES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'shell', 'pipe', 'edit', 'deliver', 'hostPtyExit']);
-
-/**
- * Whether a message of the session's goes through while a question is open.
- *
- * @param raw - The parsed message.
- * @returns True for a line's end and for requests.
- */
-function held_passes(raw: unknown): boolean {
-  const type: unknown = typeof raw === 'object' && raw !== null ? (raw as { type?: unknown }).type : undefined;
-  return typeof type === 'string' && HELD_PASSES.has(type);
 }
 
 /** The runners a desk is given: this chell's own handlers, each only when it has one. */
