@@ -6,7 +6,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "/tmp"
+          "destination": "/tmp",
+          "sources": [
+            {
+              "name": "scan.dcm"
+            }
+          ]
         }
       ]
     },
@@ -15,7 +20,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./my scans"
+          "destination": "./my scans",
+          "sources": [
+            {
+              "name": "scan.dcm"
+            }
+          ]
         }
       ]
     },
@@ -24,7 +34,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./scans"
+          "destination": "./scans",
+          "sources": [
+            {
+              "name": "scan.dcm"
+            }
+          ]
         }
       ]
     },
@@ -33,7 +48,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./scans"
+          "destination": "./scans",
+          "sources": [
+            {
+              "name": "scan.dcm"
+            }
+          ]
         }
       ]
     },
@@ -42,7 +62,15 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./out dir"
+          "destination": "./out dir",
+          "sources": [
+            {
+              "name": "b"
+            },
+            {
+              "name": "d"
+            }
+          ]
         }
       ]
     },
@@ -51,7 +79,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./scans"
+          "destination": "./scans",
+          "sources": [
+            {
+              "name": "scan.dcm"
+            }
+          ]
         }
       ]
     },
@@ -60,15 +93,30 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./one"
+          "destination": "./one",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
         },
         {
           "verb": "download",
-          "destination": "./two"
+          "destination": "./two",
+          "sources": [
+            {
+              "name": "b"
+            }
+          ]
         },
         {
           "verb": "download",
-          "destination": "./three"
+          "destination": "./three",
+          "sources": [
+            {
+              "name": "c"
+            }
+          ]
         }
       ]
     },
@@ -77,7 +125,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./out"
+          "destination": "./out",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
         }
       ]
     },
@@ -86,7 +139,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "-odd"
+          "destination": "-odd",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
         }
       ]
     },
@@ -143,7 +201,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "$OUT"
+          "destination": "$OUT",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
         }
       ]
     },
@@ -152,7 +215,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./out"
+          "destination": "./out",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
         }
       ]
     },
@@ -161,7 +229,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./out"
+          "destination": "./out",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
         }
       ]
     },
@@ -170,7 +243,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./later"
+          "destination": "./later",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
         }
       ]
     },
@@ -179,11 +257,21 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./first"
+          "destination": "./first",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
         },
         {
           "verb": "download",
-          "destination": "./second"
+          "destination": "./second",
+          "sources": [
+            {
+              "name": "b"
+            }
+          ]
         }
       ]
     },
@@ -192,7 +280,18 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "log"
+          "destination": "log",
+          "sources": [
+            {
+              "name": "a"
+            },
+            {
+              "name": "out"
+            },
+            {
+              "name": ">"
+            }
+          ]
         }
       ]
     },
@@ -201,7 +300,12 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./out"
+          "destination": "./out",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
         }
       ]
     },
@@ -246,7 +350,64 @@
       "intents": [
         {
           "verb": "download",
-          "destination": "./first"
+          "destination": "./first",
+          "sources": [
+            {
+              "name": "a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "line": "download /home/me/*.dcm ./out",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out",
+          "sources": [
+            {
+              "pattern": "*.dcm"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "line": "download . ./out",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out",
+          "sources": [
+            {
+              "anyFolder": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "line": "download $F ./out",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": null,
+          "unbound": "its source \"$F\" is written with a reference, whose value is not known here: type the path itself"
+        }
+      ]
+    },
+    {
+      "line": "download /home/me/scans ./out",
+      "intents": [
+        {
+          "verb": "download",
+          "destination": "./out",
+          "sources": [
+            {
+              "name": "scans"
+            }
+          ]
         }
       ]
     }

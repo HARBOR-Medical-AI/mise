@@ -89,7 +89,7 @@ let installedSurface: unknown = null;
 // not in the table fails the test that used it. The match is brasa's own.
 const DELIVERY_LINES: ReadonlyArray<{ line: string; intents: Array<{ verb: string; destination: string | null }> }> =
   (JSON.parse(readFileSync(new URL('../../brasa/tests/fixtures/deliveryLines.json', import.meta.url), 'utf8')) as { lines: Array<{ line: string; intents: Array<{ verb: string; destination: string | null }> }> }).lines;
-const { deliveryIntent_matches } = await import('../../brasa/dist/builtins/fs/deliveryMatch.js');
+const { deliveryIntent_matches, deliverySource_matches } = await import('../../brasa/dist/builtins/fs/deliveryMatch.js');
 // What a line asks to have run here: the same, from the table brasa's host-grants test holds its reader to. A line
 // that looks like one (a `!`, a pipe, an `edit` or `command` head) but is not in the table fails the test that used it.
 interface HostLine { line: string; shells: string[]; pipes: string[]; edits: string[] }
@@ -104,6 +104,7 @@ jest.unstable_mockModule('@fnndsc/brasa', () => ({
     return row?.intents ?? [];
   },
   deliveryIntent_matches,
+  deliverySource_matches,
   lineHostOperations_read: async (line: string): Promise<{ shells: string[]; pipes: string[]; edits: string[] }> => {
     const row: HostLine | undefined = HOST_LINES.find((one: HostLine): boolean => one.line === line);
     if (row === undefined && /^\s*(!|edit |command )|\|/.test(line)) throw new Error(`not in the shared table: ${line}`);
@@ -602,9 +603,9 @@ describe('RemoteEngine live output', () => {
     }
 
     /** Sends the client one delivery request, as the daemon would. */
-    function deliver_emit(ws: FakeWebSocket, deliverId: string, executeId: string | undefined, destination: string | undefined): void {
+    function deliver_emit(ws: FakeWebSocket, deliverId: string, executeId: string | undefined, destination: string | undefined, path: string = '/home/me/scan.dcm'): void {
       ws.emit('message', Buffer.from(JSON.stringify({
-        type: 'deliver', deliverId, path: '/home/me/scan.dcm', filename: 'scan.dcm',
+        type: 'deliver', deliverId, path, filename: path.split('/').pop(),
         ...(executeId !== undefined ? { id: executeId } : {}),
         ...(destination !== undefined ? { destination } : {}),
       })));
@@ -616,13 +617,15 @@ describe('RemoteEngine live output', () => {
     }
 
     /** Runs one line during which the daemon asks for one delivery for that line; answers what the client sent back. */
-    async function delivery_during(line: string, destination: string | undefined, how: { afterResult?: boolean; unnamed?: boolean } = {}): Promise<{ sent: Array<Record<string, unknown>>; delivered: string[] }> {
+    async function delivery_during(line: string, destination: string | undefined, how: { afterResult?: boolean; unnamed?: boolean; path?: string } = {}): Promise<{ sent: Array<Record<string, unknown>>; delivered: string[] }> {
       const delivered: string[] = [];
+      // The file a download of the line would send: the first source it names (a line of /a sends /a).
+      const path: string = how.path ?? (/download(?:\s+-\S+(?:\s+\d+)?)*\s+(\/\S+)/.exec(line)?.[1] ?? '/home/me/scan.dcm');
       let lineId: string = '';
       scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
         lineId = String(sent.id);
         process.nextTick(() => {
-          if (how.afterResult !== true) deliver_emit(ws, 'd1', how.unnamed === true ? undefined : lineId, destination);
+          if (how.afterResult !== true) deliver_emit(ws, 'd1', how.unnamed === true ? undefined : lineId, destination, path);
           result_emit(ws, lineId);
         });
       };
@@ -632,7 +635,7 @@ describe('RemoteEngine live output', () => {
         onDeliver: async (request) => { delivered.push(request.destination ?? '(none)'); return { location: `/written/${request.filename}`, bytes: 1 }; },
       });
       await remote.line_execute(line);
-      if (how.afterResult === true) deliver_emit((FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket), 'd1', lineId, destination);
+      if (how.afterResult === true) deliver_emit((FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket), 'd1', lineId, destination, path);
       await new Promise((resolve) => setTimeout(resolve, 10));
       remote.close();
       return { sent: (FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket).sent as Array<Record<string, unknown>>, delivered };
@@ -642,6 +645,43 @@ describe('RemoteEngine live output', () => {
       const { sent, delivered } = await delivery_during('download -f /home/me/scan.dcm "./my scans"', './my scans');
       expect(delivered).toEqual(['./my scans']);
       expect(sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'deliverResult', deliverId: 'd1' })]));
+    });
+
+    it('a file no source of the line names is refused, though the destination is right', async () => {
+      const { sent, delivered } = await delivery_during('download /home/me/scan.dcm ./scans', './scans', { path: '/home/me/.ssh/id_ed25519' });
+      expect(delivered).toEqual([]);
+      expect(refusal_of(sent)).toContain('"/home/me/.ssh/id_ed25519", which no source the line sent from here names');
+    });
+
+    it('two files of one folder download are written; a repeat of one, or a file outside the folder, is refused', async () => {
+      const delivered: string[] = [];
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        const id = String(sent.id);
+        process.nextTick(() => {
+          const one = (deliverId: string, path: string, filename: string): void => {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'deliver', deliverId, id, path, filename, destination: './out' })));
+          };
+          one('f1', '/home/me/scans/a/1.dcm', 'a/1.dcm');
+          one('f2', '/home/me/scans/b.dcm', 'b.dcm');
+          one('f3', '/home/me/scans/a/1.dcm', 'a/1.dcm');
+          one('f4', '/home/me/other/c.dcm', 'c.dcm');
+          one('f5', '/home/me/scans/../x', '../x');
+          setTimeout(() => { result_emit(ws, id); }, 10);
+        });
+      };
+      remote = await RemoteEngine.connect({
+        url: 'ws://127.0.0.1:1',
+        token: 'token',
+        onDeliver: async (request) => { delivered.push(request.filename); return { location: `/written/${request.filename}`, bytes: 1 }; },
+      });
+      await remote.line_execute('download /home/me/scans ./out');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const sent = (FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket).sent as Array<Record<string, unknown>>;
+      expect(delivered).toEqual(['a/1.dcm', 'b.dcm']);
+      expect(refusal_of(sent, 'f3')).toContain('a second time for the same line');
+      expect(refusal_of(sent, 'f4')).toContain('which no source the line sent from here names');
+      expect(refusal_of(sent, 'f5')).toContain('which no source the line sent from here names');
+      remote.close();
     });
 
     it('a daemon that does not say which line is refused, even with one line running, and told to upgrade', async () => {

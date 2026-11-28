@@ -30,9 +30,9 @@ import { shellWords_tokenize, type ShellSegment, type ShellWord } from '../../li
 import { quoteOpen_find } from '../../lib/quoting.js';
 import { commandList_parse, type ListCommand } from '../../lib/semicolonParser.js';
 import { downloadCommand } from './download.js';
-import type { DeliveryIntent } from './deliveryMatch.js';
+import type { DeliveryIntent, SourceIntent } from './deliveryMatch.js';
 
-export { deliveryIntent_matches, type DeliveryIntent } from './deliveryMatch.js';
+export { deliveryIntent_matches, deliverySource_matches, type DeliveredFile, type DeliveryIntent, type SourceIntent } from './deliveryMatch.js';
 
 /** A command that delivers, and the operand that names where. */
 interface DeliveringCommand {
@@ -42,6 +42,8 @@ interface DeliveringCommand {
   readonly declaration: CommandDeclaration;
   /** The name of its destination operand. */
   readonly operand: string;
+  /** The name of its source operand. */
+  readonly sourceOperand: string;
 }
 
 /**
@@ -52,7 +54,7 @@ interface DeliveringCommand {
  * no delivery.
  */
 const DELIVERING: ReadonlyArray<DeliveringCommand> = [
-  { backend: 'chris', declaration: downloadCommand, operand: 'destination' },
+  { backend: 'chris', declaration: downloadCommand, operand: 'destination', sourceOperand: 'source' },
 ];
 
 /**
@@ -70,15 +72,45 @@ function commandIntents_read(command: string, delivering_: ReadonlyArray<Deliver
   if (verb === undefined || delivering === undefined) return [];
   const placed: Map<string, ShellWord[]> | null = commandOperands_place(delivering.declaration, words.slice(1));
   if (placed === null) return [];
+  const sourceWords: ShellWord[] = placed.get(delivering.sourceOperand) ?? [];
+  const referenced: ShellWord | undefined = sourceWords.find(word_isReferenced);
+  if (referenced !== undefined) {
+    return [{ verb, destination: null, unbound: `its source ${JSON.stringify(referenced.value)} is written with a reference, whose value is not known here: type the path itself` }];
+  }
+  const sources: SourceIntent[] = sourceWords.map(sourceIntent_read);
   const word: ShellWord | undefined = placed.get(delivering.operand)?.[0];
-  if (word === undefined) return [{ verb, destination: null }];
+  if (word === undefined) return [{ verb, destination: null, sources }];
   // A reference in the destination is expanded by the engine, across the
   // wire. Its spelling here is not a place, and must not become one because
   // the engine sends the same letters back. A quoted `'$x'` is plain text.
-  if ((word.segments ?? []).some((segment: ShellSegment): boolean => segment.ref !== null)) {
+  if (word_isReferenced(word)) {
     return [{ verb, destination: null, unbound: `its destination ${JSON.stringify(word.value)} is written with a reference, whose value is not known here: type the path itself` }];
   }
-  return [{ verb, destination: word.value }];
+  return [{ verb, destination: word.value, sources }];
+}
+
+/**
+ * Whether a word holds a reference the engine resolves (a quoted `'$x'` is plain text).
+ *
+ * @param word - The word.
+ * @returns True when it does.
+ */
+function word_isReferenced(word: ShellWord): boolean {
+  return (word.segments ?? []).some((segment: ShellSegment): boolean => segment.ref !== null);
+}
+
+/**
+ * How a delivered file is bound to one source word: by its base name; by its last segment's pattern when the
+ * engine expands it; any folder for `.`, `..`, `/` or `~`, whose files keep their path inside it.
+ *
+ * @param word - A source word.
+ * @returns The binding.
+ */
+function sourceIntent_read(word: ShellWord): SourceIntent {
+  const spelled: string = word.pathnameExpansion ? word.globPattern : word.value;
+  const last: string = spelled.split('/').filter((part: string): boolean => part.length > 0).pop() ?? '';
+  if (last === '' || last === '.' || last === '..' || last === '~') return { anyFolder: true };
+  return word.pathnameExpansion ? { pattern: last } : { name: last };
 }
 
 /**

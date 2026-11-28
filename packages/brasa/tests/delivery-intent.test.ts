@@ -24,7 +24,7 @@ cuminMock_install(() => ({
   errorStack: { stack_pop: () => undefined, stack_getAll: () => [] },
 }));
 
-const { deliveryIntents_read, deliveryIntent_matches } = await import('../src/builtins/fs/deliveryIntent.js');
+const { deliveryIntents_read, deliveryIntent_matches, deliverySource_matches } = await import('../src/builtins/fs/deliveryIntent.js');
 const { commandOperands_place } = await import('../src/core/commandParse.js');
 const { downloadCommand } = await import('../src/builtins/fs/download.js');
 const { shellWords_tokenize } = await import('../src/lib/parser.js');
@@ -114,3 +114,23 @@ describe('every command that asks a surface to write a file is one the reader kn
     expect(callers).toEqual(['builtins/fs/download.ts']);
   });
 });
+
+describe('deliverySource_matches', () => {
+  it('a file named by the line is delivered by its own name; a file inside a named folder keeps its path inside it', () => {
+    expect(deliverySource_matches([{ name: 'scan.dcm' }], { path: '/home/me/scan.dcm', filename: 'scan.dcm' })).toBe(true);
+    expect(deliverySource_matches([{ name: 'scan.dcm' }], { path: '/home/me/other.dcm', filename: 'other.dcm' })).toBe(false);
+    expect(deliverySource_matches([{ name: 'scan.dcm' }], { path: '/home/me/scan.dcm', filename: 'renamed.dcm' })).toBe(false);
+    expect(deliverySource_matches([{ name: 'scans' }], { path: '/home/me/scans/a/1.dcm', filename: 'a/1.dcm' })).toBe(true);
+    expect(deliverySource_matches([{ name: 'scans' }], { path: '/home/me/other/a/1.dcm', filename: 'a/1.dcm' })).toBe(false);
+  });
+
+  it('a pattern binds by the name it matches; any folder binds a file by its path inside; a written name never climbs or is absolute', () => {
+    expect(deliverySource_matches([{ pattern: '*.dcm' }], { path: '/home/me/x.dcm', filename: 'x.dcm' })).toBe(true);
+    expect(deliverySource_matches([{ pattern: '*.dcm' }], { path: '/home/me/x.txt', filename: 'x.txt' })).toBe(false);
+    expect(deliverySource_matches([{ anyFolder: true }], { path: '/home/me/a/b.txt', filename: 'a/b.txt' })).toBe(true);
+    for (const filename of ['../x', '/etc/passwd', 'a/../../x', '', 'a//b', './x']) {
+      expect([filename, deliverySource_matches([{ anyFolder: true }, { name: 'x' }], { path: `/home/me/${filename}`, filename })]).toEqual([filename, false]);
+    }
+  });
+});
+

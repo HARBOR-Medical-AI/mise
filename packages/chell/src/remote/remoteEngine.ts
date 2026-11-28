@@ -16,7 +16,7 @@ import { serverMessage_parse, CONTRACT_VERSION, RequestBroker, type ServerMessag
 import type { CommandEnvelope } from '@fnndsc/cumin';
 import type { BrasaEngine, CompletionResult } from '@fnndsc/brasa';
 import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type FileDeliverResult } from '@fnndsc/menu';
-import { deliveryIntent_matches, deliveryIntents_read, lineHostOperations_read, envelope_deliver, sink_get, sink_set, surface_set, type DeliveryIntent, type OutputSink, type Surface } from '@fnndsc/brasa';
+import { deliveryIntent_matches, deliveryIntents_read, deliverySource_matches, lineHostOperations_read, envelope_deliver, sink_get, sink_set, surface_set, type DeliveredFile, type DeliveryIntent, type OutputSink, type Surface } from '@fnndsc/brasa';
 import { promptFromContext_render } from '../core/prompt/session.js';
 import { HostGrantBook } from './hostGrants.js';
 import { output_above } from '../core/lineDiscipline.js';
@@ -93,6 +93,8 @@ export class RemoteEngine implements BrasaEngine {
   private readonly onDeliver: ((request: FileDeliverRequest) => Promise<FileDeliverResult>) | undefined;
   /** What each line in flight asked to have delivered here, by its request id. */
   private readonly deliveryIntents: Map<string, DeliveryIntent[]> = new Map<string, DeliveryIntent[]>();
+  /** The files each line in flight has had delivered here, by its request id: a file is delivered once. */
+  private readonly deliveredFiles: Map<string, Set<string>> = new Map<string, Set<string>>();
   /** What each line in flight asked to have run here (host commands, pipeline segments, edits), by its request id. */
   private readonly hostGrants: HostGrantBook = new HostGrantBook();
   private readonly onClosing: ((cause: ClosingCause) => void) | undefined;
@@ -241,6 +243,7 @@ export class RemoteEngine implements BrasaEngine {
       if (this.activeExecuteId === id) this.activeExecuteId = undefined;
       this.requestSinks.delete(id);
       this.deliveryIntents.delete(id);
+      this.deliveredFiles.delete(id);
       this.hostGrants.line_close(id);
       this.resultExits.delete(id);
     }
@@ -569,11 +572,37 @@ export class RemoteEngine implements BrasaEngine {
     const intents: DeliveryIntent[] | undefined = this.deliveryIntents.get(executeId);
     if (intents === undefined) throw new Error(`refused: ${asked} for a line that is not running here; nothing was written`);
     if (intents.length === 0) throw new Error(`refused: ${asked}, and the line sent from here asks for no file; nothing was written`);
-    if (deliveryIntent_matches(intents, request.destination)) return;
+    if (deliveryIntent_matches(intents, request.destination)) {
+      this.deliverySource_require(executeId, intents, request, asked);
+      return;
+    }
     const unbound: DeliveryIntent | undefined = intents.find((intent: DeliveryIntent): boolean => intent.unbound !== undefined);
     if (unbound !== undefined) throw new Error(`refused: ${asked}, and the line sent from here cannot say where: ${unbound.unbound}; nothing was written`);
     const named: string = intents.map((intent: DeliveryIntent): string => (intent.destination === null ? 'the working directory' : JSON.stringify(intent.destination))).join(', ');
     throw new Error(`refused: ${asked}, and the line sent from here named ${named}; nothing was written`);
+  }
+
+  /**
+   * Refuses a delivered file no source the line named would send, and one already delivered for the line: a file
+   * of a folder the line named keeps its path inside it; any other file is the source itself, by name.
+   *
+   * @param executeId - This client's id for the asking line.
+   * @param intents - What the line asked for.
+   * @param request - The delivery.
+   * @param asked - What was asked, in words.
+   * @throws {Error} When no source sends it, or it was delivered already.
+   */
+  private deliverySource_require(executeId: string, intents: DeliveryIntent[], request: FileDeliverRequest, asked: string): void {
+    const bound: DeliveryIntent[] = intents.filter((intent: DeliveryIntent): boolean => deliveryIntent_matches([intent], request.destination));
+    const file: DeliveredFile = { path: request.path, filename: request.filename };
+    if (!bound.some((intent: DeliveryIntent): boolean => intent.sources === undefined || deliverySource_matches(intent.sources, file))) {
+      throw new Error(`refused: ${asked}, from ${JSON.stringify(request.path)}, which no source the line sent from here names; nothing was written`);
+    }
+    const key: string = `${request.path}\u0000${request.filename}`;
+    const delivered: Set<string> = this.deliveredFiles.get(executeId) ?? new Set<string>();
+    if (delivered.has(key)) throw new Error(`refused: ${asked} a second time for the same line; nothing was written`);
+    delivered.add(key);
+    this.deliveredFiles.set(executeId, delivered);
   }
 
   /**
