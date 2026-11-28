@@ -680,8 +680,9 @@ export class BerthLauncher {
       const id: unknown = field_get(row, 'Id');
       if (name === '' || typeof id !== 'string' || id === '' || field_get(row, 'Labels', BERTH_LABEL) !== this.options.prefix || !row_isHelper(row)) continue;
       // By the id the listing gave: the helper listed, not whatever holds its name by the time the call lands.
-      await this.options.docker.call('DELETE', `/containers/${encodeURIComponent(id)}?force=true`);
-      removed.push(name);
+      const answer: DockerAnswer = await this.options.docker.call('DELETE', `/containers/${encodeURIComponent(id)}?force=true`);
+      // Said removed only when the engine says it was.
+      if (answer.status === 204) removed.push(name);
     }
     return removed;
   }
@@ -702,8 +703,8 @@ export class BerthLauncher {
       if (typeof name !== 'string' || !name.startsWith(`${this.options.prefix}-net-`)) continue;
       if (await this.wire_holdsBerth(name, people)) continue;
       await this.porter_leave(name);
-      await docker.call('DELETE', `/networks/${name}`);
-      removed.push(name);
+      const answer: DockerAnswer = await docker.call('DELETE', `/networks/${name}`);
+      if (answer.status === 204) removed.push(name);
     }
     return removed;
   }
@@ -718,13 +719,12 @@ export class BerthLauncher {
   private async wire_holdsBerth(name: string, people: ReadonlySet<string>): Promise<boolean> {
     const inspected: DockerAnswer = await this.options.docker.call('GET', `/networks/${name}`);
     const members: unknown = field_get(inspected.body, 'Containers');
-    if (inspected.status !== 200 || (members !== null && members !== undefined && typeof members !== 'object')) return true;
-    if (typeof members !== 'object' || members === null) return false;
+    // Membership the engine did not give whole (no map of members, or a member without a name) may hide a berth.
+    if (inspected.status !== 200 || typeof members !== 'object' || members === null || Array.isArray(members)) return true;
+    const named: unknown[] = Object.values(members as Record<string, unknown>).map((member: unknown): unknown => field_get(member, 'Name'));
+    if (named.some((memberName: unknown): boolean => typeof memberName !== 'string' || memberName === '')) return true;
     // Only a berth keeps its wire, under its name or its legacy one, or by its labels; porter or a helper on the wire does not.
-    return Object.values(members as Record<string, unknown>).some((member: unknown): boolean => {
-      const memberName: unknown = field_get(member, 'Name');
-      return typeof memberName === 'string' && (berthName_matches(this.options.prefix, memberName) || people.has(memberName));
-    });
+    return (named as string[]).some((memberName: string): boolean => berthName_matches(this.options.prefix, memberName) || people.has(memberName));
   }
 
 

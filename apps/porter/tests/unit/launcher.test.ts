@@ -53,6 +53,10 @@ class FakeDocker implements DockerApi {
   wireInspectStatus: number = 200;
   /** Every destructive call the engine was asked: a removal, a stop, a disconnect. */
   destroys: string[] = [];
+  /** Every call the engine was asked, method and route. */
+  calls: string[] = [];
+  /** What a wire's inspect answers instead of its members, by name. */
+  wireBodies: Map<string, unknown> = new Map();
   /** Each container's log, a line each; absent: nothing written. */
   logs: Map<string, string[]> = new Map();
   /** Who follows each container's log, and how each follow ends. */
@@ -112,7 +116,10 @@ class FakeDocker implements DockerApi {
     const [route = '', query = ''] = path.split('?');
     if (method === 'DELETE' || route.endsWith('/stop') || route.endsWith('/disconnect')) this.destroys.push(`${method} ${route}`);
     const parts: string[] = route.split('/');
-    const name: string = decodeURIComponent(parts[2] ?? '');
+    const asked: string = decodeURIComponent(parts[2] ?? '');
+    // A container is named by its name or by its id (`cid-<name>`), as the engine takes either.
+    const name: string = parts[1] === 'containers' && asked.startsWith('cid-') ? asked.slice('cid-'.length) : asked;
+    this.calls.push(`${method} ${route}`);
     if (method === 'POST' && route === '/images/create') {
       const image: string = new URLSearchParams(query).get('fromImage') ?? '';
       this.pulls.push(image);
@@ -135,6 +142,7 @@ class FakeDocker implements DockerApi {
     if (route.endsWith('/disconnect') && parts[1] === 'networks') { this.networks.get(name)?.members.delete((body as { Container: string }).Container); return { status: 200, body: null }; }
     if (method === 'GET' && parts[1] === 'networks') {
       if (this.wireInspectStatus !== 200) return { status: this.wireInspectStatus, body: { message: 'the engine is busy' } };
+      if (this.wireBodies.has(name)) return { status: 200, body: this.wireBodies.get(name) };
       const net = this.networks.get(name);
       return net === undefined ? { status: 404, body: {} } : { status: 200, body: { Name: name, Containers: Object.fromEntries([...net.members].map((member) => [member, { Name: member }])), IPAM: { Config: [{ Subnet: '172.18.0.0/16', ...(this.gateway !== null ? { Gateway: this.gateway } : {}) }] } } };
     }
@@ -160,7 +168,7 @@ class FakeDocker implements DockerApi {
     if (route === '/containers/json') {
       if (this.listStatus !== 200) return { status: this.listStatus, body: { message: 'the engine is busy' } };
       const filter = JSON.parse(decodeURIComponent(new URLSearchParams(query).get('filters') ?? '{}')) as { name?: string[] };
-      return { status: 200, body: [...this.containers.entries()].filter(([one]) => filter.name === undefined || one.startsWith(filter.name[0] ?? '')).map(([one, each]) => ({ Id: one, Names: [`/${one}`], Labels: each.spec['Labels'], State: this.states.get(one) ?? (each.running ? 'running' : 'exited') })) };
+      return { status: 200, body: [...this.containers.entries()].filter(([one]) => filter.name === undefined || one.startsWith(filter.name[0] ?? '')).map(([one, each]) => ({ Id: `cid-${one}`, Names: [`/${one}`], Labels: each.spec['Labels'], State: this.states.get(one) ?? (each.running ? 'running' : 'exited') })) };
     }
     if (route === '/containers/create') {
       const made: string = new URLSearchParams(query).get('name') ?? '';
@@ -169,7 +177,7 @@ class FakeDocker implements DockerApi {
       for (const net of nets) this.networks.get(net)?.members.add(made);
       this.containers.set(made, { spec, running: false, ip: `10.213.77.${this.serial++}`, token: null });
       this.made.push({ name: made, spec });
-      return { status: 201, body: { Id: made } };
+      return { status: 201, body: { Id: `cid-${made}` } };
     }
     const found = this.containers.get(name);
     if (method === 'GET' && route.endsWith('/logs')) {
@@ -181,7 +189,7 @@ class FakeDocker implements DockerApi {
       if (this.inspectStatus.has(name)) return { status: this.inspectStatus.get(name) ?? 500, body: { message: 'the engine is busy' } };
       if (found === undefined) return { status: 404, body: {} };
       const wire: string = String((found.spec['HostConfig'] as Record<string, unknown>)['NetworkMode']);
-      return { status: 200, body: { Id: name, State: { Running: found.running }, Config: { User: found.spec['User'], Labels: found.spec['Labels'] }, HostConfig: found.spec['HostConfig'], NetworkSettings: { Networks: { [wire]: { IPAddress: found.ip } } } } };
+      return { status: 200, body: { Id: `cid-${name}`, State: { Running: found.running }, Config: { User: found.spec['User'], Labels: found.spec['Labels'] }, HostConfig: found.spec['HostConfig'], NetworkSettings: { Networks: { [wire]: { IPAddress: found.ip } } } } };
     }
     if (route.endsWith('/start')) { if (found !== undefined) found.running = true; return { status: 204, body: null }; }
     if (route.endsWith('/wait')) { if (found !== undefined) found.running = false; return { status: 200, body: { StatusCode: name.endsWith('-own') ? this.ownExit : 0 } }; }
@@ -685,6 +693,30 @@ describe('the launcher over an engine', () => {
       expect(docker.destroys.filter((one: string): boolean => one.includes(helperName))).toEqual([]);
       docker.inspectStatus.clear();
     }
+  });
+
+  it('a wire whose members the engine did not give whole is kept; an empty one still goes; a helper is run and removed by its own id, and only a removal the engine made is said', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    const owner: string = `${berthNames_derive('mbw', ANA, 'ana').container}-own`;
+    // The helper her start made was run, waited for and removed by the id the engine gave it, not by its name.
+    expect(docker.calls.filter((one: string): boolean => one.includes(owner))).toEqual(expect.arrayContaining([`POST /containers/cid-${owner}/start`, `POST /containers/cid-${owner}/wait`, `DELETE /containers/cid-${owner}`]));
+    expect(docker.calls.filter((one: string): boolean => one === `POST /containers/${owner}/start`)).toEqual([]);
+    for (const [wire, body] of [['mbw-net-nomap', { Name: 'mbw-net-nomap' }], ['mbw-net-list', { Name: 'mbw-net-list', Containers: [] }], ['mbw-net-noname', { Name: 'mbw-net-noname', Containers: { abc: { IPv4Address: '10.0.0.9/24' } } }]] as const) {
+      docker.networks.set(wire, { options: {}, members: new Set(['porter']) });
+      docker.wireBodies.set(wire, body);
+    }
+    docker.networks.set('mbw-net-empty', { options: {}, members: new Set() });
+    docker.wireBodies.set('mbw-net-empty', { Name: 'mbw-net-empty', Containers: {} });
+    docker.destroys = [];
+    expect(await launcher.orphans_clear()).toEqual(['mbw-net-empty']);
+    expect(docker.destroys.filter((one: string): boolean => /nomap|list|noname/.test(one))).toEqual([]);
+    // A removal the engine refuses is not said to have happened.
+    docker.wireBodies.clear();
+    docker.networks.set('mbw-net-stuck', { options: {}, members: new Set(['porter']) });
+    docker.unwireStatus = 409;
+    expect(await launcher.orphans_clear()).not.toContain('mbw-net-stuck');
+    docker.unwireStatus = 204;
   });
 
   it('refuses root, a name CUBE would not take, and a start with no token it holds', async () => {
