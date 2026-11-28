@@ -102,6 +102,11 @@ describe('DeviceCodes', () => {
     expect(codes.host_find(issued.code)).toBe('titan');
     expect(codes.host_find(issued.code.toLowerCase().replace('-', ''))).toBe('titan');
     expect(codes.take(issued.code)).toEqual({ state: 'pending' });
+    // Only a login that claimed the code may authorise it; a second claim is refused while the first holds it.
+    expect(codes.authorise(issued.code, { token: 'pdt_z', user: 'chris', name: 'chris@titan', expires: 'later' })).toBe(false);
+    expect(codes.code_claim(issued.code)).toBe('titan');
+    expect(codes.code_claim(issued.code)).toBeNull();
+    expect(codes.host_find(issued.code)).toBeNull();
     expect(codes.authorise(issued.code, { token: 'pdt_x', user: 'chris', name: 'chris@titan', expires: 'later' })).toBe(true);
     expect(codes.host_find(issued.code)).toBeNull(); // a code authorised is no longer waiting on the page
     expect(codes.authorise(issued.code, { token: 'pdt_y', user: 'kim', name: 'kim@titan', expires: 'later' })).toBe(false);

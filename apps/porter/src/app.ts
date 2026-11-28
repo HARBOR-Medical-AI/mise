@@ -336,7 +336,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   await tokens.load();
   if (tokens.legacyNote !== null) options.log?.(tokens.legacyNote);
   if (tokens.skipped.length > 0) options.log?.(`the door's token store holds ${String(tokens.skipped.length)} record(s) of the wrong shape, left out: ${tokens.skipped.join(', ')}`);
-  const codes: DeviceCodes = options.codes ?? new DeviceCodes();
+  const codes: DeviceCodes = options.codes ?? new DeviceCodes(options.now);
   // Who a request is from, and whether it came by https, is the socket's word unless the peer is a proxy
   // the operator named (`PORTER_TRUSTED_PROXIES`): only such a peer's forwarded headers are believed. A
   // peer nobody named that writes `X-Forwarded-For` is counted by its own address.
@@ -616,12 +616,23 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // session here. The token is minted, handed to the waiting poll, and
     // the browser is told it can go.
     if (wanted.code !== undefined) {
-      const forHost: string | null = codes.host_find(wanted.code);
+      // Claimed before anything is awaited: a second submission of the same code is refused while this one mints.
+      const forHost: string | null = codes.code_claim(wanted.code);
       if (forHost === null) return refuse(410, `the code ${wanted.code} is not waiting (ten minutes, once); run chell auth login again`);
       const name: string = `${username}@${forHost}`;
-      const made: MintedToken = await tokens.mint(identity, username, name);
+      let made: MintedToken;
+      try {
+        made = await tokens.mint(identity, username, name);
+      } catch (error: unknown) {
+        codes.claim_release(wanted.code);
+        throw error;
+      }
       const grant: DeviceGrant = { token: made.token, user: username, name, expires: made.record.expires };
-      codes.authorise(wanted.code, grant);
+      // A code that died while the token was minted is not authorised: the token goes, and the login says so.
+      if (!codes.authorise(wanted.code, grant)) {
+        await tokens.revoke_presented(made.token);
+        return refuse(410, `the code ${wanted.code} ran out while the door minted its token; run chell auth login again`);
+      }
       options.log?.(`minted a door token "${name}" for ${username} by device code (dies ${made.record.expires.slice(0, 10)})`);
       // A token boots a session on the login the session saved. A human who
       // never came through before has none, so this login, which holds a

@@ -200,6 +200,19 @@ interface RecordsRead {
   migratedFrom?: string;
 }
 
+/**
+ * A folder the store will not use because it is shown not to be one of
+ * its own (a link, a file, another account's): proof that what is at that
+ * name holds none of the store. Any other failure to open a folder is not
+ * this, and is never read as "no versions here".
+ *
+ * @example
+ * ```ts
+ * try { await folder_hold(path); } catch (error) { if (error instanceof FolderIneligible) skip(); else throw error; }
+ * ```
+ */
+export class FolderIneligible extends Error {}
+
 /** A folder of the store, held open: reached through its handle, whatever stands at its name since. */
 interface HeldFolder {
   /** The open folder. */
@@ -246,8 +259,11 @@ function time_isIso(value: unknown): value is string {
   return !Number.isNaN(at) && new Date(at).toISOString() === value;
 }
 
-/** What a token's name, an identity and a username may be: a short line with no control characters. */
+/** What a token's name may be: a short line with no control characters. */
 const TOKEN_TEXT: RegExp = /^[^\u0000-\u001f\u007f]{1,200}$/u;
+
+/** What an identity (`user@<CUBE url>`) and a username may be: one line with no control characters, as long as a URL gets. */
+const IDENTITY_TEXT: RegExp = /^[^\u0000-\u001f\u007f]{1,4096}$/u;
 
 /**
  * Reads one record of the store as a token, or says it is not one. The one
@@ -265,8 +281,8 @@ export function tokenRecord_read(value: unknown): DoorToken | null {
   if (value === null || typeof value !== 'object') return null;
   const held: Record<string, unknown> = value as Record<string, unknown>;
   const { name, identity, user, hash, created, expires, lastUsed } = held;
-  if (typeof name !== 'string' || !TOKEN_TEXT.test(name) || typeof identity !== 'string' || !TOKEN_TEXT.test(identity)) return null;
-  if (typeof user !== 'string' || !TOKEN_TEXT.test(user) || typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) return null;
+  if (typeof name !== 'string' || !TOKEN_TEXT.test(name) || typeof identity !== 'string' || !IDENTITY_TEXT.test(identity)) return null;
+  if (typeof user !== 'string' || !IDENTITY_TEXT.test(user) || typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) return null;
   if (!time_isIso(created) || !time_isIso(expires) || (lastUsed !== null && !time_isIso(lastUsed))) return null;
   return { name, identity, user, hash, created, expires, lastUsed };
 }
@@ -329,6 +345,8 @@ export class TokenStore {
     await this.held_run(async (root: HeldFolder): Promise<void> => {
       await this.temps_sweep(root);
       const current: StoreVersion = await this.current_read(root);
+      // A store that has versions is marked so beside its file: should its versions ever vanish, it refuses rather than start again from the copy from before.
+      if (current.n > 0) await this.versioned_mark();
       // What was left out of the store as found, said once at start: a migrated version holds only what was kept.
       this.skipped = current.skipped;
       if (current.legacy) {
@@ -336,6 +354,7 @@ export class TokenStore {
         await this.hooks.read_after?.();
         const temp: string | false = await this.version_publish(root, 1, current.tokens, current.migratedFrom);
         if (temp !== false) await this.maintenance_run(root, 1, temp);
+        await this.versioned_mark();
       }
       const now: StoreVersion = current.legacy ? await this.current_read(root) : current;
       if (now.n > 0) await this.legacy_compare(now.migratedFrom);
@@ -366,7 +385,7 @@ export class TokenStore {
       lastUsed: null,
     };
     // The rule a reader holds a record to, held before it is published: a mint never succeeds for a token the next read drops.
-    if (tokenRecord_read(record) === null) throw new Error(`a door token needs a name, a user and an identity of one short line each; "${name.slice(0, 40)}" is not one`);
+    if (tokenRecord_read(record) === null) throw new Error(`a door token needs a name of one short line, and a user and an identity of one line each; "${name.slice(0, 40)}" is not one`);
     await this.change_apply((tokens: DoorToken[]) => ({
       result: undefined,
       next: [...tokens.filter((held: DoorToken): boolean => !(held.identity === identity && held.name === name)), record],
@@ -498,11 +517,25 @@ export class TokenStore {
           // Committed: whatever the upkeep after it does, the caller is given what the change did.
           await this.hooks.publish_after?.();
           await this.maintenance_run(root, current.n + 1, temp);
+          await this.versioned_mark().catch((): void => undefined);
           return out.result;
         }
       }
       throw new Error(`the door's token store at ${this.path} kept changing under this change; try again`);
     });
+  }
+
+  /**
+   * Marks the store as versioned, beside its file: made once, never removed.
+   *
+   * @throws {Error} When the mark cannot be made, other than by its being there already.
+   */
+  private async versioned_mark(): Promise<void> {
+    try {
+      await writeFile(`${this.path}.versioned`, `${this.versions}\n`, { mode: 0o600, flag: 'wx' });
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
   }
 
   /**
@@ -519,7 +552,7 @@ export class TokenStore {
     try {
       return await step(root);
     } finally {
-      await root.handle.close();
+      await handle_close(root.handle);
     }
   }
 
@@ -544,7 +577,13 @@ export class TokenStore {
     // The rule the reader holds a version to, held before it is published: nothing is published that would be refused.
     if (Buffer.byteLength(text, 'utf8') > VERSION_MAX_BYTES) throw new Error(`the door's token store at ${this.path} would grow past ${String(VERSION_MAX_BYTES)} bytes; the change is refused`);
     const temps: HeldFolder = await folder_hold(join(root.at, 'tmp'), true);
-    const folder: HeldFolder = await folder_hold(join(root.at, folder_name(n)), true);
+    let folder: HeldFolder;
+    try {
+      folder = await folder_hold(join(root.at, folder_name(n)), true);
+    } catch (error: unknown) {
+      await handle_close(temps.handle);
+      throw error;
+    }
     try {
       const name: string = `${String(n)}.${String(process.pid)}.${randomBytes(6).toString('hex')}`;
       const temp: string = join(temps.at, name);
@@ -563,8 +602,9 @@ export class TokenStore {
         throw error;
       }
     } finally {
-      await temps.handle.close();
-      await folder.handle.close();
+      // A close that fails after the link has published leaves the publication as it is.
+      await handle_close(temps.handle);
+      await handle_close(folder.handle);
     }
   }
 
@@ -585,7 +625,7 @@ export class TokenStore {
         try {
           await rm(join(temps.at, temp), { force: true });
         } finally {
-          await temps.handle.close();
+          await handle_close(temps.handle);
         }
       },
       async (): Promise<void> => { await this.version_empty(root, published - VERSIONS_KEPT); },
@@ -619,9 +659,11 @@ export class TokenStore {
       let folder: HeldFolder;
       try {
         folder = await folder_hold(join(root.at, `s${String(k)}`));
-      } catch {
-        // Not a folder of the store's own (a link, a file, another's): no versions are in it.
-        continue;
+      } catch (error: unknown) {
+        // Shown not to be a folder of the store's own (a link, a file, another's): no versions are in it.
+        // Any other failure is uncertainty about the newest versions, and a reader never falls back to older ones on it.
+        if (error instanceof FolderIneligible) continue;
+        throw error;
       }
       try {
         const found: number[] = (await readdir(folder.at))
@@ -629,7 +671,7 @@ export class TokenStore {
           .filter((n: number): boolean => n > 0 && n <= VERSION_LAST && Math.floor(n / VERSIONS_PER_FOLDER) === k);
         if (found.length > 0) return Math.max(...found);
       } finally {
-        await folder.handle.close();
+        await handle_close(folder.handle);
       }
     }
     return 0;
@@ -667,6 +709,10 @@ export class TokenStore {
    * @throws {Error} When the legacy file cannot be read, is larger than a store, or is not a token file.
    */
   private async unversioned_read(root: HeldFolder): Promise<StoreVersion | null> {
+    // A store marked as versioned that finds no version lost them: the copy from before is never the truth again.
+    if ((await lstat(`${this.path}.versioned`).catch((): null => null)) !== null) {
+      throw new Error(`the door's token store at ${this.path} has lost its versions (${this.versions}); it refuses rather than go back to the file from before`);
+    }
     await this.hooks.legacy_before?.();
     const bytes: Buffer | null = await ownFile_read(this.path, VERSION_MAX_BYTES);
     if (bytes !== null) return { n: 0, ...this.tokens_parse(bytes.toString('utf8'), 'the file'), migratedFrom: bytes_hash(bytes), legacy: true };
@@ -710,7 +756,7 @@ export class TokenStore {
       if (bytes === null) throw new Error(`the door's token store at ${this.path} lost version ${String(n)}`);
       return bytes.length === 0 ? null : bytes.toString('utf8');
     } finally {
-      await folder.handle.close();
+      await handle_close(folder.handle);
     }
   }
 
@@ -757,7 +803,13 @@ export class TokenStore {
   private async version_empty(root: HeldFolder, n: number): Promise<void> {
     if (n < 1) return;
     const folder: HeldFolder = await folder_hold(join(root.at, folder_name(n)));
-    const temps: HeldFolder = await folder_hold(join(root.at, 'tmp'), true);
+    let temps: HeldFolder;
+    try {
+      temps = await folder_hold(join(root.at, 'tmp'), true);
+    } catch (error: unknown) {
+      await handle_close(folder.handle);
+      throw error;
+    }
     try {
       const path: string = join(folder.at, `${String(n)}.json`);
       const found: Stats | null = await lstat(path).catch((): null => null);
@@ -766,8 +818,8 @@ export class TokenStore {
       await writeFile(empty, '', { mode: 0o600, flag: 'wx' });
       await rename(empty, path);
     } finally {
-      await folder.handle.close();
-      await temps.handle.close();
+      await handle_close(folder.handle);
+      await handle_close(temps.handle);
     }
   }
 
@@ -788,8 +840,26 @@ export class TokenStore {
         if (found !== null && found.isFile() && found.mtimeMs < cutoff) await rm(path, { force: true });
       }
     } finally {
-      await temps.handle.close();
+      await handle_close(temps.handle);
     }
+  }
+}
+
+/**
+ * Closes a handle; a close that fails is not a failure of what was done through it.
+ *
+ * @param handle - The handle.
+ *
+ * @example
+ * ```ts
+ * await handle_close(folder.handle);
+ * ```
+ */
+async function handle_close(handle: FileHandle): Promise<void> {
+  try {
+    await handle.close();
+  } catch {
+    // Closed already, or the descriptor went with an error: nothing done through it is undone.
   }
 }
 
@@ -816,7 +886,8 @@ function folder_name(n: number): string {
  * @param path - The folder.
  * @param made - Whether to make it first when it is not there.
  * @returns The folder, held.
- * @throws {Error} When it is a link, not a folder, another account's, or the host gives no path to an open folder.
+ * @throws {FolderIneligible} When it is a link, not a folder, or another account's.
+ * @throws {Error} When it cannot be opened for another reason, or the host gives no path to an open folder.
  *
  * @example
  * ```ts
@@ -829,11 +900,14 @@ export async function folder_hold(path: string, made: boolean = false): Promise<
   try {
     handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   } catch (error: unknown) {
-    throw new Error(`the door's token store folder ${path} is not a folder of its own (${(error as NodeJS.ErrnoException).code ?? 'unreadable'})`);
+    const code: string | undefined = (error as NodeJS.ErrnoException).code;
+    // A link at the name, or a file: shown to be no folder of the store's. Anything else (no access, an I/O error, no descriptors) is a failure, said as one.
+    if (code === 'ELOOP' || code === 'ENOTDIR') throw new FolderIneligible(`the door's token store folder ${path} is not a folder of its own (${code})`);
+    throw error;
   }
   try {
     const found: Stats = await handle.stat();
-    if (!found.isDirectory() || (typeof process.getuid === 'function' && found.uid !== process.getuid())) throw new Error(`the door's token store folder ${path} is not a folder of its own`);
+    if (!found.isDirectory() || (typeof process.getuid === 'function' && found.uid !== process.getuid())) throw new FolderIneligible(`the door's token store folder ${path} is not a folder of its own`);
     if ((found.mode & 0o7777) !== 0o700) await handle.chmod(0o700);
     const at: string = `/proc/self/fd/${String(handle.fd)}`;
     const seen: Stats = await stat(at);
@@ -930,12 +1004,16 @@ export interface DeviceGrant {
   expires: string;
 }
 
-/** One code waiting, authorised, or spent. */
+/** One code waiting, being authorised, authorised, or spent. */
 interface DeviceCode {
   /** The host chell runs on, for the page ("authorise chell on titan") and the token's name. */
   host: string;
+  /** When it was issued, ms. */
   issued: number;
+  /** What chell gets, once a human authorised it. */
   grant: DeviceGrant | null;
+  /** Whether a login holds it while it mints a token for it: no second login may take it meanwhile. */
+  claimed: boolean;
 }
 
 /** The letters a code is made of: no 0/O, 1/I/L, so it survives being read aloud. */
@@ -978,7 +1056,7 @@ export class DeviceCodes {
     let code: string = deviceCode_make();
     while (this.codes.has(code)) code = deviceCode_make();
     const issued: number = this.now();
-    this.codes.set(code, { host, issued, grant: null });
+    this.codes.set(code, { host, issued, grant: null, claimed: false });
     return { code, expires: new Date(issued + DEVICE_CODE_LIFE_MS).toISOString() };
   }
 
@@ -991,7 +1069,42 @@ export class DeviceCodes {
   public host_find(code: string): string | null {
     this.sweep();
     const held: DeviceCode | undefined = this.codes.get(deviceCode_normalise(code));
-    return held === undefined || held.grant !== null ? null : held.host;
+    return held === undefined || held.grant !== null || held.claimed ? null : held.host;
+  }
+
+  /**
+   * Claims a waiting code for one login, before it mints: a second login
+   * with the same code is refused while this one holds it.
+   *
+   * @param code - As typed.
+   * @returns The host chell runs on, or null when the code is not waiting, or is already claimed.
+   *
+   * @example
+   * ```ts
+   * const host = codes.code_claim('K7PD-3MXQ'); // 'titan'
+   * ```
+   */
+  public code_claim(code: string): string | null {
+    this.sweep();
+    const held: DeviceCode | undefined = this.codes.get(deviceCode_normalise(code));
+    if (held === undefined || held.grant !== null || held.claimed) return null;
+    held.claimed = true;
+    return held.host;
+  }
+
+  /**
+   * Lets go of a claim whose mint failed, so the code can be tried again.
+   *
+   * @param code - As typed.
+   *
+   * @example
+   * ```ts
+   * codes.claim_release('K7PD-3MXQ');
+   * ```
+   */
+  public claim_release(code: string): void {
+    const held: DeviceCode | undefined = this.codes.get(deviceCode_normalise(code));
+    if (held !== undefined && held.grant === null) held.claimed = false;
   }
 
   /**
@@ -1004,7 +1117,8 @@ export class DeviceCodes {
   public authorise(code: string, grant: DeviceGrant): boolean {
     this.sweep();
     const held: DeviceCode | undefined = this.codes.get(deviceCode_normalise(code));
-    if (held === undefined || held.grant !== null) return false;
+    // Only the login that claimed it, and only while it is still alive.
+    if (held === undefined || held.grant !== null || !held.claimed) return false;
     held.grant = grant;
     return true;
   }

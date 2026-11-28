@@ -446,3 +446,54 @@ describe('what Codex and agy found in the second form (seq 400, attack B1a-2)', 
   });
 });
 
+describe('what Codex and agy found in the third form (seq 402, attack B1a-3)', () => {
+  it('a revocation published, then the newest folder unreadable: the reader fails, never falls back to the token\'s older life', async () => {
+    const store: TokenStore = await writer();
+    const held = await store.mint('kim@c/', 'kim', 'laptop');
+    expect(await store.revoke_presented(held.token)).not.toBeNull();
+    const folder: string = join(`${path}.d`, 's0');
+    chmodSync(folder, 0o000);
+    try {
+      await expect(store.check(held.token)).rejects.toThrow();
+      await expect(store.login_authorize(held.token, AT)).rejects.toThrow();
+      await expect(store.list()).rejects.toThrow();
+    } finally {
+      chmodSync(folder, 0o700);
+    }
+    expect(await store.check(held.token)).toEqual({ ok: false, why: 'unknown' });
+  });
+
+  it('a versioned store whose versions vanish refuses, and never starts again from the file from before', async () => {
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, tokens: [{ name: 'laptop', identity: 'kim@c/', user: 'kim', hash: 'a'.repeat(64), created: '2026-11-01T00:00:00.000Z', expires: '2099-01-01T00:00:00.000Z', lastUsed: null }] }));
+    const store: TokenStore = await writer();
+    await store.revoke('kim');
+    expect(existsSync(`${path}.versioned`)).toBe(true);
+    rmSync(`${path}.d`, { recursive: true, force: true });
+    await expect(new TokenStore(path, 30).load()).rejects.toThrow('lost its versions');
+  });
+
+  it('closes every folder it opened when a publication is refused part way', async () => {
+    const store: TokenStore = await writer();
+    await store.mint('kim@c/', 'kim', 'laptop');
+    const folder: string = join(`${path}.d`, 's0');
+    renameSync(folder, `${folder}.aside`);
+    writeFileSync(folder, 'x');
+    const open = (): number => readdirSync('/proc/self/fd').length;
+    const before: number = open();
+    for (let i = 0; i < 10; i++) await expect(store.mint(`u${String(i)}@c/`, `u${String(i)}`, 'n')).rejects.toThrow();
+    expect(open()).toBe(before);
+    rmSync(folder);
+    renameSync(`${folder}.aside`, folder);
+  });
+
+  it('keeps an identity as long as a CUBE url gets, from a one-file store and from a mint', async () => {
+    const identity: string = `kim@https://${'h'.repeat(900)}.example.org/api/v1/`;
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, tokens: [{ name: 'laptop', identity, user: 'kim', hash: 'a'.repeat(64), created: '2026-11-01T00:00:00.000Z', expires: '2099-01-01T00:00:00.000Z', lastUsed: null }] }));
+    const store: TokenStore = await writer();
+    expect(store.skipped).toEqual([]);
+    expect((await store.list()).map((t) => t.identity)).toEqual([identity]);
+    const made = await store.mint(identity, 'kim', 'cron');
+    expect((await store.check(made.token)).ok).toBe(true);
+  });
+});
+

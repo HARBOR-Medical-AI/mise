@@ -8,6 +8,8 @@
  *
  * @module
  */
+import { existsSync } from 'node:fs';
+
 import { CredentialStore } from './creds.js';
 import { sessionEnv_withheld } from './host/sessionEnv.js';
 import { doorOrigins_resolve, type DoorOrigins } from './origin.js';
@@ -276,6 +278,12 @@ async function porter_start(): Promise<void> {
     process.exit(1);
   }
   if (ask.mode === 'help') { console.log(PORTER_USAGE); return; }
+  // Porter reaches its own folders through the handles it holds on them (/proc/self/fd), so a folder swapped
+  // under it is never written into: it needs Linux, and says so rather than run without that.
+  if (!existsSync('/proc/self/fd')) {
+    console.error('[!] porter needs Linux: it holds its folders open and reaches them through /proc/self/fd, which this host does not have');
+    process.exit(1);
+  }
   if (ask.mode === 'version') { console.log(versionReport_build()); return; }
   if (ask.mode === 'status') { await status_print(porterStateDir_resolve(process.env)); return; }
   if (ask.mode === 'end') { await session_end(porterStateDir_resolve(process.env), ask.who); return; }
