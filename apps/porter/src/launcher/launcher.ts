@@ -92,6 +92,22 @@ export interface BerthState {
   readonly unread?: string;
 }
 
+/** One row of the engine's listing, read as a berth of this spoke. */
+interface BerthRow {
+  /** Its identity label, or '' when absent or blank. */
+  identity: string;
+  /** Its user label, or '' when absent or blank. */
+  user: string;
+  /** The cohort it holds, or `none`. */
+  cohort: string;
+  /** The engine's state for it, or '' when it says none. */
+  engineState: string;
+  /** Whether it holds its room (running, paused, restarting, removing). */
+  up: boolean;
+  /** The name the engine lists it by, or ''. */
+  shown: string;
+}
+
 /** The engine states a container holds its room in, and might answer from. */
 const UP_STATES: readonly string[] = ['running', 'paused', 'restarting', 'removing'];
 
@@ -641,36 +657,76 @@ export class BerthLauncher {
    */
   public async orphans_clear(): Promise<string[]> {
     const docker: DockerApi = this.options.docker;
-    const removed: string[] = [];
     await this.cubeNetwork_ensure();
+    // Nothing is removed or disconnected on an inventory the engine did not give: unknown is never "nobody's".
     const listed: DockerAnswer = await docker.call('GET', `/containers/json?all=true&filters=${labelFilter_build(this.options.prefix)}`);
-    const rows: unknown[] = Array.isArray(listed.body) ? listed.body : [];
+    if (listed.status !== 200 || !Array.isArray(listed.body)) throw new BerthRefusal(502, `the engine did not list the containers (it answered ${String(listed.status)}); nothing was cleared`);
+    const rows: unknown[] = listed.body;
     // A container that names a person is a berth, whatever its name: kept, with its wire; only true helpers go.
     const people: Set<string> = new Set(rows.filter(row_namesPerson).map(containerName_read).filter((name: string): boolean => name !== ''));
+    return [...(await this.helpers_clear(rows)), ...(await this.wires_clear(people))];
+  }
+
+  /**
+   * Removes the helpers an earlier run left: this spoke's, by the id the listing gave.
+   *
+   * @param rows - The engine's container listing.
+   * @returns The helpers removed, by name.
+   */
+  private async helpers_clear(rows: unknown[]): Promise<string[]> {
+    const removed: string[] = [];
     for (const row of rows) {
       const name: string = containerName_read(row);
-      if (name === '' || !row_isHelper(row)) continue;
-      await docker.call('DELETE', `/containers/${name}?force=true`);
+      const id: unknown = field_get(row, 'Id');
+      if (name === '' || typeof id !== 'string' || id === '' || field_get(row, 'Labels', BERTH_LABEL) !== this.options.prefix || !row_isHelper(row)) continue;
+      // By the id the listing gave: the helper listed, not whatever holds its name by the time the call lands.
+      await this.options.docker.call('DELETE', `/containers/${encodeURIComponent(id)}?force=true`);
       removed.push(name);
     }
+    return removed;
+  }
+
+  /**
+   * Removes the wires with no berth on them, porter taken off first; a wire whose members cannot be read is left.
+   *
+   * @param people - The names of the containers that name a person (berths, whatever their names).
+   * @returns The wires removed, by name.
+   */
+  private async wires_clear(people: ReadonlySet<string>): Promise<string[]> {
+    const docker: DockerApi = this.options.docker;
+    const removed: string[] = [];
     const wires: DockerAnswer = await docker.call('GET', `/networks?filters=${labelFilter_build(this.options.prefix)}`);
-    for (const row of Array.isArray(wires.body) ? wires.body : []) {
+    if (wires.status !== 200 || !Array.isArray(wires.body)) throw new BerthRefusal(502, `the engine did not list the wires (it answered ${String(wires.status)}); no wire was cleared`);
+    for (const row of wires.body) {
       const name: unknown = field_get(row, 'Name');
       if (typeof name !== 'string' || !name.startsWith(`${this.options.prefix}-net-`)) continue;
-      const inspected: DockerAnswer = await docker.call('GET', `/networks/${name}`);
-      const members: unknown = field_get(inspected.body, 'Containers');
-      // Only a berth keeps its wire, under its name or its legacy one; porter or a helper on the wire does not.
-      const berthOn: boolean = typeof members === 'object' && members !== null && Object.values(members as Record<string, unknown>).some((member: unknown): boolean => {
-        const memberName: unknown = field_get(member, 'Name');
-        return typeof memberName === 'string' && (berthName_matches(this.options.prefix, memberName) || people.has(memberName));
-      });
-      if (berthOn) continue;
+      if (await this.wire_holdsBerth(name, people)) continue;
       await this.porter_leave(name);
       await docker.call('DELETE', `/networks/${name}`);
       removed.push(name);
     }
     return removed;
   }
+
+  /**
+   * Whether a wire carries a berth, or may: one whose members the engine does not give is taken to.
+   *
+   * @param name - The wire.
+   * @param people - The names of the containers that name a person.
+   * @returns True when it carries a berth or cannot be read.
+   */
+  private async wire_holdsBerth(name: string, people: ReadonlySet<string>): Promise<boolean> {
+    const inspected: DockerAnswer = await this.options.docker.call('GET', `/networks/${name}`);
+    const members: unknown = field_get(inspected.body, 'Containers');
+    if (inspected.status !== 200 || (members !== null && members !== undefined && typeof members !== 'object')) return true;
+    if (typeof members !== 'object' || members === null) return false;
+    // Only a berth keeps its wire, under its name or its legacy one, or by its labels; porter or a helper on the wire does not.
+    return Object.values(members as Record<string, unknown>).some((member: unknown): boolean => {
+      const memberName: unknown = field_get(member, 'Name');
+      return typeof memberName === 'string' && (berthName_matches(this.options.prefix, memberName) || people.has(memberName));
+    });
+  }
+
 
   /**
    * Starts a person's berth, or rewrites the token of the one running.
@@ -766,30 +822,48 @@ export class BerthLauncher {
     const rows: unknown[] = listed.body;
     const want: string | null = who === null ? null : identity_normalise(who.user, who.cubeUrl);
     const states: BerthState[] = [];
-    for (const row of rows) {
-      // This spoke's berths only, and not its own helpers (the one that gives a person their volumes).
-      if (field_get(row, 'Labels', BERTH_LABEL) !== this.options.prefix || row_isHelper(row)) continue;
-      const identity: string = labelText_read(row, 'identity');
-      const user: string = labelText_read(row, 'user');
-      const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
-      const engineState: unknown = field_get(row, 'State');
-      // Up is any state the container holds its room in, and might answer from: running, paused, restarting, removing.
-      const up: boolean = typeof engineState === 'string' && UP_STATES.includes(engineState);
+    for (const listedRow of rows) {
+      const row: BerthRow | null = this.berthRow_read(listedRow);
+      if (row === null) continue;
       // A berth container without whose it is (a label absent or blank) could be anyone's: when up, said so to every asker.
-      if (identity === '' || user === '') {
-        if (up) states.push({ identity: '', user: '', state: 'running', url: null, token: null, container: containerName_read(row), cohort: NO_COHORT, unread: 'a running berth container carries no identity' });
+      if (row.identity === '' || row.user === '') {
+        if (row.up) states.push({ identity: '', user: '', state: 'running', url: null, token: null, container: row.shown, cohort: NO_COHORT, unread: 'a running berth container carries no identity' });
         continue;
       }
-      if (want !== null && identity !== want) continue;
-      const derived: BerthNames = berthNames_derive(this.options.prefix, identity, user);
-      // The container is read under the name the engine lists it by: one under its legacy name is still that person's berth.
-      const shown: string = containerName_read(row);
-      const names: BerthNames = shown === '' ? derived : { ...derived, container: shown };
-      // Only a running one is asked where it answers; paused or restarting, it is up and where it answers is not known.
-      const read: BerthRead = !up ? { berth: null, unread: null } : engineState !== 'running' ? { berth: null, unread: `the berth is ${String(engineState)}` } : await this.berth_read(names, identity).then((berth): BerthRead => ({ berth, unread: null }), (error: unknown): BerthRead => ({ berth: null, unread: berthUnread_say(error) }));
-      states.push({ identity, user, state: up ? 'running' : 'stopped', url: read.berth?.url ?? null, token: read.berth?.token ?? null, container: names.container, cohort: typeof cohort === 'string' ? cohort : NO_COHORT, ...(read.unread === null ? {} : { unread: read.unread }) });
+      if (want !== null && row.identity !== want) continue;
+      states.push(await this.berthState_read(row));
     }
     return states;
+  }
+
+  /**
+   * One row of the engine's listing as a berth of this spoke: null for another spoke's container or a helper.
+   *
+   * @param listed - The row.
+   * @returns What the row says of the berth, labels blank or absent alike.
+   */
+  private berthRow_read(listed: unknown): BerthRow | null {
+    if (field_get(listed, 'Labels', BERTH_LABEL) !== this.options.prefix || row_isHelper(listed)) return null;
+    const cohort: unknown = field_get(listed, 'Labels', `${BERTH_LABEL}.cohort`);
+    const state: unknown = field_get(listed, 'State');
+    const engineState: string = typeof state === 'string' ? state : '';
+    // Up is any state the container holds its room in, and might answer from: running, paused, restarting, removing.
+    return { identity: labelText_read(listed, 'identity'), user: labelText_read(listed, 'user'), cohort: typeof cohort === 'string' ? cohort : NO_COHORT, engineState, up: UP_STATES.includes(engineState), shown: containerName_read(listed) };
+  }
+
+  /**
+   * A person's berth as it stands, from its row: where a running one answers, read from its file.
+   *
+   * @param row - The berth's row, its identity and user known.
+   * @returns Its state.
+   */
+  private async berthState_read(row: BerthRow): Promise<BerthState> {
+    const derived: BerthNames = berthNames_derive(this.options.prefix, row.identity, row.user);
+    // The container is read under the name the engine lists it by: one under its legacy name is still that person's berth.
+    const names: BerthNames = row.shown === '' ? derived : { ...derived, container: row.shown };
+    // Only a running one is asked where it answers; paused or restarting, it is up and where it answers is not known.
+    const read: BerthRead = !row.up ? { berth: null, unread: null } : row.engineState !== 'running' ? { berth: null, unread: `the berth is ${row.engineState}` } : await this.berth_read(names, row.identity).then((berth): BerthRead => ({ berth, unread: null }), (error: unknown): BerthRead => ({ berth: null, unread: berthUnread_say(error) }));
+    return { identity: row.identity, user: row.user, state: row.up ? 'running' : 'stopped', url: read.berth?.url ?? null, token: read.berth?.token ?? null, container: names.container, cohort: row.cohort, ...(read.unread === null ? {} : { unread: read.unread }) };
   }
 
   /**
@@ -809,21 +883,33 @@ export class BerthLauncher {
     const listed: DockerAnswer = await docker.call('GET', `/containers/json?all=true&filters=${labelFilter_build(this.options.prefix)}`);
     if (listed.status !== 200 || !Array.isArray(listed.body)) throw new BerthRefusal(502, `the engine did not list the berths (it answered ${String(listed.status)})`);
     const up: Map<string, { name: string; cohort: string }> = new Map();
-    for (const row of listed.body) {
-      const identity: string = labelText_read(row, 'identity');
-      const user: string = labelText_read(row, 'user');
-      const cohort: unknown = field_get(row, 'Labels', `${BERTH_LABEL}.cohort`);
-      const engineState: unknown = field_get(row, 'State');
-      if (field_get(row, 'Labels', BERTH_LABEL) !== this.options.prefix || row_isHelper(row) || user === '' || identity !== identity_normalise(user, cubeUrl)) continue;
-      if (typeof engineState !== 'string' || !UP_STATES.includes(engineState)) continue;
+    for (const listedRow of listed.body) {
+      const row: BerthRow | null = this.berthRow_read(listedRow);
+      if (row === null || !row.up || row.user === '' || row.identity !== identity_normalise(row.user, cubeUrl)) continue;
       // A row the engine lists without a name is still the person's: read under the name the launcher gives it.
-      const shown: string = containerName_read(row);
-      const name: string = shown === '' ? berthNames_derive(this.options.prefix, identity, user).container : shown;
+      const name: string = row.shown === '' ? berthNames_derive(this.options.prefix, row.identity, row.user).container : row.shown;
       // Two running containers of one identity: the first by name is the one reported, whatever order the engine lists them in.
-      const held = up.get(user);
-      if (held === undefined || name < held.name) up.set(user, { name, cohort: typeof cohort === 'string' ? cohort : NO_COHORT });
+      const held = up.get(row.user);
+      if (held === undefined || name < held.name) up.set(row.user, { name, cohort: row.cohort });
     }
-    const homes: DockerAnswer = await docker.call('GET', `/volumes?filters=${encodeURIComponent(JSON.stringify({ label: [`${BERTH_LABEL}=${this.options.prefix}`, `${BERTH_LABEL}.volume=home`] }))}`);
+    const kept: Set<string> = await this.homes_read(cubeUrl);
+    // The samples are taken together: the engine holds each call for a second to measure the CPU.
+    const running: BerthAccess[] = await Promise.all([...up.entries()].map(async ([user, one]): Promise<BerthAccess> => {
+      const sample: DockerAnswer = await answer_within(docker.call('GET', `/containers/${encodeURIComponent(one.name)}/stats?stream=false`), this.options.statsMs ?? STATS_ANSWER_MS);
+      return { user, state: 'running', cohort: one.cohort, ...(sample.status === 200 ? stats_digest(sample.body) : { cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }) };
+    }));
+    const stopped: BerthAccess[] = [...kept].filter((user: string): boolean => !up.has(user)).map((user: string): BerthAccess => ({ user, state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }));
+    return [...running, ...stopped].sort((a: BerthAccess, b: BerthAccess): number => a.user.localeCompare(b.user));
+  }
+  /**
+   * The people of one CUBE who keep a home here, by user name.
+   *
+   * @param cubeUrl - The CUBE.
+   * @returns Their user names.
+   * @throws {BerthRefusal} When the engine does not list the volumes.
+   */
+  private async homes_read(cubeUrl: string): Promise<Set<string>> {
+    const homes: DockerAnswer = await this.options.docker.call('GET', `/volumes?filters=${encodeURIComponent(JSON.stringify({ label: [`${BERTH_LABEL}=${this.options.prefix}`, `${BERTH_LABEL}.volume=home`] }))}`);
     const volumes: unknown = field_get(homes.body, 'Volumes');
     // The engine lists none as null (or an empty list); anything else is not a listing.
     if (homes.status !== 200 || (volumes !== null && !Array.isArray(volumes))) throw new BerthRefusal(502, `the engine did not list the homes (it answered ${String(homes.status)})`);
@@ -835,14 +921,9 @@ export class BerthLauncher {
       // A home made before volumes carried an identity has none to compare: it counts for its user.
       if (identity === undefined || identity === identity_normalise(user, cubeUrl)) kept.add(user);
     }
-    // The samples are taken together: the engine holds each call for a second to measure the CPU.
-    const running: BerthAccess[] = await Promise.all([...up.entries()].map(async ([user, one]): Promise<BerthAccess> => {
-      const sample: DockerAnswer = await answer_within(docker.call('GET', `/containers/${encodeURIComponent(one.name)}/stats?stream=false`), this.options.statsMs ?? STATS_ANSWER_MS);
-      return { user, state: 'running', cohort: one.cohort, ...(sample.status === 200 ? stats_digest(sample.body) : { cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }) };
-    }));
-    const stopped: BerthAccess[] = [...kept].filter((user: string): boolean => !up.has(user)).map((user: string): BerthAccess => ({ user, state: 'stopped', cohort: null, cpuPercent: null, memoryBytes: null, memoryLimitBytes: null }));
-    return [...running, ...stopped].sort((a: BerthAccess, b: BerthAccess): number => a.user.localeCompare(b.user));
+    return kept;
   }
+
 
   /**
    * The start itself: a container under the berth's legacy name is removed
@@ -1039,9 +1120,19 @@ export class BerthLauncher {
     const docker: DockerApi = this.options.docker;
     const owner: string = `${names.container}-own`;
     // The helper's name taken by a container that names a person is that person's berth: never removed to make room.
+    // Only a helper this launcher made (this spoke's label, no person) is replaced, by the id the engine names it by;
+    // a name the engine cannot say the holder of, or one held by anything else, stops the start.
     const occupant: DockerAnswer = await docker.call('GET', `/containers/${owner}/json`);
-    if (occupant.status === 200 && labels_namePerson(field_get(occupant.body, 'Config', 'Labels'))) throw new BerthRefusal(409, `${ask.user}'s volumes were not given to them: the helper's name ${owner} is held by a berth`);
-    await docker.call('DELETE', `/containers/${owner}?force=true`);
+    if (occupant.status === 200) {
+      const labels: unknown = field_get(occupant.body, 'Config', 'Labels');
+      if (labels_namePerson(labels)) throw new BerthRefusal(409, `${ask.user}'s volumes were not given to them: the helper's name ${owner} is held by a berth`);
+      const heldId: unknown = field_get(occupant.body, 'Id');
+      if (field_get(labels, BERTH_LABEL) !== this.options.prefix || typeof heldId !== 'string' || heldId === '') throw new BerthRefusal(409, `${ask.user}'s volumes were not given to them: the helper's name ${owner} is held by a container this launcher did not make`);
+      const cleared: DockerAnswer = await docker.call('DELETE', `/containers/${encodeURIComponent(heldId)}?force=true`);
+      if (![204, 404].includes(cleared.status)) throw new BerthRefusal(502, `${ask.user}'s volumes were not given to them: the earlier helper was not removed (it answered ${String(cleared.status)})`);
+    } else if (occupant.status !== 404) {
+      throw new BerthRefusal(502, `${ask.user}'s volumes were not given to them: the engine could not say what holds ${owner} (it answered ${String(occupant.status)})`);
+    }
     const made: DockerAnswer = await docker.call('POST', `/containers/create?name=${owner}`, {
       Image: this.options.image,
       User: '0:0',
@@ -1049,10 +1140,13 @@ export class BerthLauncher {
       Labels: { [BERTH_LABEL]: this.options.prefix, [`${BERTH_LABEL}.helper`]: 'own' },
       HostConfig: { Binds: [`${names.home}:/v/home`, `${names.work}:/v/work`, ...(legacy !== null ? [`${legacy}:/v/old:ro`] : [])], NetworkMode: 'none', CapDrop: ['ALL'], CapAdd: ['CHOWN', 'DAC_OVERRIDE'], SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true },
     });
-    if (made.status !== 201) throw new BerthRefusal(502, `${ask.user}'s volumes were not given to them: ${JSON.stringify(made.body)}`);
-    await docker.call('POST', `/containers/${owner}/start`);
-    const waited: DockerAnswer = await docker.call('POST', `/containers/${owner}/wait`);
-    await docker.call('DELETE', `/containers/${owner}?force=true`);
+    const madeId: unknown = field_get(made.body, 'Id');
+    if (made.status !== 201 || typeof madeId !== 'string' || madeId === '') throw new BerthRefusal(502, `${ask.user}'s volumes were not given to them: ${JSON.stringify(made.body)}`);
+    // The helper made is run, waited for and removed by its own id.
+    const helperId: string = encodeURIComponent(madeId);
+    await docker.call('POST', `/containers/${helperId}/start`);
+    const waited: DockerAnswer = await docker.call('POST', `/containers/${helperId}/wait`);
+    await docker.call('DELETE', `/containers/${helperId}?force=true`);
     if (field_get(waited.body, 'StatusCode') !== 0) throw new BerthRefusal(502, `${ask.user}'s volumes were not given to them (exit ${String(field_get(waited.body, 'StatusCode'))})`);
   }
 
