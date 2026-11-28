@@ -132,6 +132,20 @@ export class HostGrantBook {
   }
 
   /**
+   * The line in flight, when exactly one is.
+   *
+   * @returns Its id, or undefined.
+   *
+   * @example
+   * ```ts
+   * book.line_sole();
+   * ```
+   */
+  public line_sole(): string | undefined {
+    return this.lines.size === 1 ? [...this.lines.keys()][0] : undefined;
+  }
+
+  /**
    * How many lines of this chell are in flight on this connection.
    *
    * @returns The count.

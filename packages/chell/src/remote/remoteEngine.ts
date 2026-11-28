@@ -16,7 +16,7 @@ import { serverMessage_parse, CONTRACT_VERSION, RequestBroker, type ServerMessag
 import type { CommandEnvelope } from '@fnndsc/cumin';
 import type { BrasaEngine, CompletionResult } from '@fnndsc/brasa';
 import { SERVER_MESSAGE_TYPES, type ClosingCause, type FileDeliverRequest, type FileDeliverResult } from '@fnndsc/menu';
-import { builtinCommand_has, deliveryIntents_read, lineHostOperations_read, sourceIntents_settle, envelope_deliver, sink_get, sink_set, surface_set, type EngineRuns, type LineHostOperations, type OutputSink, type Surface } from '@fnndsc/brasa';
+import { builtinCommand_has, coreCommand_has, deliveryIntents_read, lineHostOperations_read, sourceIntents_settle, envelope_deliver, sink_get, sink_set, surface_set, type EngineRuns, type WordRoute, type LineHostOperations, type OutputSink, type Surface } from '@fnndsc/brasa';
 import type { LocalEditResult } from '@fnndsc/menu/surface';
 import { HostConsent, type ConsentAsk } from './hostConsent.js';
 import { HostDesk, type HostDeskOptions } from './hostDesk.js';
@@ -24,6 +24,7 @@ import { promptFromContext_render } from '../core/prompt/session.js';
 import { output_above } from '../core/lineDiscipline.js';
 import { terminalId_parse } from '../core/terminalId.js';
 import { HostPtyRelay, hostPtyTerminal_describe, type HostPtyDeclared, type HostPtyOutgoing, type HostPtyTerminal } from './hostPty.js';
+import { TerminalOwner } from './terminalOwner.js';
 
 /** Options for connecting a remote engine. */
 export interface RemoteEngineOptions {
@@ -108,8 +109,8 @@ export class RemoteEngine implements BrasaEngine {
   private readonly held: Buffer[] = [];
   private heldBytes: number = 0;
   private heldDropped: boolean = false;
-  /** How many of the session's own questions are open on this terminal. */
-  private promptsOpen: number = 0;
+  /** Who holds this chell's terminal: a question, a command, the editor, a handed-over program, a prompt. */
+  private readonly owner: TerminalOwner = new TerminalOwner();
   private readonly onClosing: ((cause: ClosingCause) => void) | undefined;
   private readonly onStale: ((stale: boolean) => void) | undefined;
   /** Hands this terminal to a program on the daemon's pty, when this chell is in one. */
@@ -164,14 +165,18 @@ export class RemoteEngine implements BrasaEngine {
     this.hostPty = hostPtyTerminal_describe(options.terminal) !== undefined
       ? new HostPtyRelay(options.terminal as HostPtyTerminal, (message: HostPtyOutgoing): void => { this.ws.send(JSON.stringify(message)); })
       : null;
-    this.consent = new HostConsent(options.consentAsk ?? null, options.allowHostRequests ?? false);
+    this.consent = new HostConsent(options.consentAsk ?? null, options.allowHostRequests ?? false, this.owner);
     // What the session said while a question was open is shown once it is answered, in order.
     this.consent.idle_set((): void => { this.held_flush(); });
     this.desk = new HostDesk({
       message_send: (message: Record<string, unknown>): void => { this.ws.send(JSON.stringify(message)); },
       consent: this.consent,
       hostPty: this.hostPty,
-      terminal_isBusy: (): boolean => this.promptsOpen > 0,
+      owner: this.owner,
+      connection_fail: (reason: string): void => {
+        console.error(chalk.red(`[!] ${reason}: closing the connection`));
+        this.close();
+      },
       ...handlers_compose(options),
     });
   }
@@ -196,17 +201,43 @@ export class RemoteEngine implements BrasaEngine {
    * said once after the answer, never covering the question.
    *
    * @param payload - The message.
+   * @param raw - It, parsed, so what cannot wait is answered past the bound.
    * @returns True when it was held (or dropped), so it is not handled now.
    */
-  private held_take(payload: Buffer): boolean {
+  private held_take(payload: Buffer, raw: unknown): boolean {
     if (!this.consent.question_isOpen()) return false;
     if (this.heldBytes + payload.length > HELD_BYTES_MAX) {
-      this.heldDropped = true;
+      // Past the bound: output is dropped (said once after), but what needs an answer or ends something is
+      // answered now, never dropped and never replayed late.
+      this.held_overflow(raw);
       return true;
     }
     this.held.push(payload);
     this.heldBytes += payload.length;
     return true;
+  }
+
+  /**
+   * Answers a message that cannot wait past the hold's bound: the session's question is refused, a hand-over
+   * refused, a program's end taken now; anything else is dropped.
+   *
+   * @param raw - The parsed message.
+   */
+  private held_overflow(raw: unknown): void {
+    const held: object = typeof raw === 'object' && raw !== null ? raw : {};
+    const type: unknown = Reflect.get(held, 'type');
+    const promptId: unknown = Reflect.get(held, 'promptId');
+    const ptyId: unknown = Reflect.get(held, 'ptyId');
+    if (type === 'prompt' && typeof promptId === 'string') {
+      this.ws.send(JSON.stringify({ type: 'promptError', promptId, reason: 'this terminal is answering another question' }));
+    } else if (type === 'hostPtyStart' && typeof ptyId === 'string') {
+      this.ws.send(JSON.stringify({ type: 'hostPtyRefuse', ptyId, reason: 'refused: this terminal is answering another question; nothing was handed over' }));
+    } else if (type === 'hostPtyExit' && typeof ptyId === 'string') {
+      this.hostPty?.exit(ptyId);
+      this.desk.pty_end(ptyId);
+    } else {
+      this.heldDropped = true;
+    }
   }
 
   /** Handles, in order, what the session said while a question was open. */
@@ -279,13 +310,7 @@ export class RemoteEngine implements BrasaEngine {
           engine.daemonStale = message.stale === true;
           engine.hostControl = message.hostControl ?? [];
           engine.backendId = message.backend;
-          if (message.engineCommands !== undefined) {
-            // A segment leaves the engine on its own only when both say so: this chell's own catalogue (the core
-            // and the backends it registers) and the session's list. A word either knows as the engine's is
-            // granted nothing automatically; a request for it is put to the person.
-            const words: Set<string> = new Set<string>(message.engineCommands);
-            engine.engineRuns = (word: string): boolean => builtinCommand_has(word) || words.has(word);
-          }
+          engine.engineRuns = engineRoute_compose(message.backend, message.engineCommands);
           ws.on('message', (payload: Buffer) => engine.message_handle(payload));
           // A closed connection's lines ask for nothing more here, and the terminal is this chell's again.
           ws.on('close', (): void => { engine.line_retire(); });
@@ -330,6 +355,8 @@ export class RemoteEngine implements BrasaEngine {
       this.lastExit = this.resultExits.get(id) ?? (envelopes.some((envelope: CommandEnvelope): boolean => envelope.status === 'error') ? 1 : 0);
       const liveChannels: Set<'data' | 'err'> | undefined = this.liveEnvelopeChannels.get(id);
       this.liveEnvelopeChannels.delete(id);
+      // The line has settled; what it said is shown once no question is open, never over one.
+      await this.consent.idle_wait();
       // Deliver to the active sink exactly as the in-process engine delivers
       // live, so the REPL host renders remote output without any change.
       for (const envelope of envelopes) {
@@ -382,7 +409,12 @@ export class RemoteEngine implements BrasaEngine {
    * @param lineId - The line, or none for all.
    */
   private line_retire(lineId?: string): void {
-    if (lineId === undefined) this.closed = true;
+    if (lineId === undefined) {
+      this.closed = true;
+      // What the session said before it went is not replayed after.
+      this.held.length = 0;
+      this.heldBytes = 0;
+    }
     this.desk.line_retire(lineId);
   }
 
@@ -436,7 +468,7 @@ export class RemoteEngine implements BrasaEngine {
     const raw: unknown = safeJson_parse(payload.toString());
     // While a question is put to the person, the terminal is the question's: what the session says waits, except
     // a line's end (which answers its questions) and its requests (which wait their own turn).
-    if (!held_passes(raw) && this.held_take(payload)) return;
+    if (!held_passes(raw) && this.held_take(payload, raw)) return;
     const parsed = serverMessage_parse(raw);
     if (!parsed.ok || parsed.value === undefined) {
       // A well-formed message of a type this client does not know is a
@@ -538,6 +570,7 @@ export class RemoteEngine implements BrasaEngine {
         break;
       case 'hostPtyExit':
         this.hostPty?.exit(message.ptyId);
+        this.desk.pty_end(message.ptyId);
         break;
       case 'consoleNote':
         // A note from the browser this console belongs to: above the line
@@ -576,13 +609,13 @@ export class RemoteEngine implements BrasaEngine {
         // input; an inability to prompt is a failure and reports as one.
         throw new Error('this surface cannot prompt');
       }
-      // The session's own question holds the terminal: nothing of the person's word is asked over it.
-      this.promptsOpen += 1;
+      // The session's own question holds the terminal, after whoever holds it: nothing is asked over it.
+      const terminal_release: () => void = await this.owner.terminal_take('prompt');
       let answer: string;
       try {
         answer = await this.onPrompt(message, hidden);
       } finally {
-        this.promptsOpen -= 1;
+        terminal_release();
       }
       this.ws.send(JSON.stringify({ type: 'promptAnswer', promptId, answer }));
     } catch (error: unknown) {
@@ -592,16 +625,22 @@ export class RemoteEngine implements BrasaEngine {
   }
 
   /**
-   * Renders a streamed output chunk to the local sink on its channel.
+   * The sink a line's output goes to: the one it was sent from, else the active one.
    *
-   * @param channel - The sink channel the chunk belongs to.
-   * @param chunk - The streamed text.
+   * @param id - The line, when known.
+   * @returns The sink.
    */
-  /** The sink a line's output goes to: the one it was sent from, else the active one. */
   private sink_resolve(id: string | undefined): OutputSink {
     return (id !== undefined ? this.requestSinks.get(id) : undefined) ?? sink_get();
   }
 
+  /**
+   * Renders a streamed output chunk to the local sink on its channel.
+   *
+   * @param channel - The sink channel the chunk belongs to.
+   * @param chunk - The streamed text.
+   * @param id - The line it belongs to, when known.
+   */
   private output_render(channel: 'data' | 'err' | 'status', chunk: string, id?: string): void {
     const sink: OutputSink = this.sink_resolve(id);
     if (channel === 'data') {
@@ -620,7 +659,8 @@ export class RemoteEngine implements BrasaEngine {
    * @returns The current prompt string.
    */
   public promptLine(): string {
-    return this.latestPrompt;
+    // Said where the person looks, every line: this session may run anything it asks here.
+    return this.consent.all_isAllowed() ? `${chalk.red('[host: all allowed] ')}${this.latestPrompt}` : this.latestPrompt;
   }
 
   /**
@@ -704,5 +744,29 @@ function handlers_compose(options: RemoteEngineOptions): DeskHandlers {
     ...(shell_run !== undefined ? { shellCommand_run: (command: string): Promise<number> => shell_run(command) } : {}),
     ...(edit_run !== undefined ? { editor_open: (content: string, extension: string | undefined): Promise<LocalEditResult> => edit_run(content, extension) } : {}),
     ...(file_put !== undefined ? { file_deliver: (request: FileDeliverRequest): Promise<FileDeliverResult> => file_put(request) } : {}),
+  };
+}
+
+/**
+ * Where the session's engine runs each word, as far as this chell can know it: both this chell's catalogue for the
+ * attached backend and the session's list must agree. This chell holds the core's catalogue and the ChRIS
+ * backend's; for any other backend a word outside the core is not known here, and a pipeline with it is put to the
+ * person rather than granted. A session that lists nothing grants no pipeline.
+ *
+ * @param backend - The attached session's backend.
+ * @param listed - The words the session says its engine runs.
+ * @returns The routing, or null.
+ */
+function engineRoute_compose(backend: string | undefined, listed: readonly string[] | undefined): EngineRuns {
+  if (listed === undefined) return null;
+  const words: Set<string> = new Set<string>(listed);
+  const catalogued: boolean = backend === 'chris';
+  return (word: string): WordRoute => {
+    const local: boolean = catalogued ? builtinCommand_has(word) : coreCommand_has(word);
+    const said: boolean = words.has(word);
+    if (local && said) return 'engine';
+    if (!local && !said && catalogued) return 'host';
+    // Disagreeing, or outside the core of a backend whose catalogue is not here.
+    return 'unknown';
   };
 }

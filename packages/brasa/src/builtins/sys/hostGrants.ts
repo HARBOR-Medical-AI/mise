@@ -54,11 +54,25 @@ export interface PipeGrant {
   readonly required: boolean;
 }
 
+/** Where a word runs, as far as this side knows: in the engine, on the host, or not known. */
+export type WordRoute = 'engine' | 'host' | 'unknown';
+
 /**
- * Which words run in the engine of the session a line is sent to (its builtins), as that session says; null when
- * it has not said, and then no pipeline routing can be established.
+ * Where the session's engine runs each word: in the engine (a builtin), on the host, or not known (the two sides
+ * disagree, or this side does not hold that backend's catalogue). Null when the session has not said; a pipeline
+ * with a word not known, or with no routing at all, grants nothing (a request is then put to the person).
  */
-export type EngineRuns = ((word: string) => boolean) | null;
+export type EngineRuns = ((word: string) => WordRoute) | null;
+
+/**
+ * This engine's own routing: its registry is the session's.
+ *
+ * @param word - A word.
+ * @returns Where it runs.
+ */
+function localRoute_read(word: string): WordRoute {
+  return builtinCommand_has(word) ? 'engine' : 'host';
+}
 
 /**
  * What one line may ask the machine it was typed on to run, each once, in the order the engine asks.
@@ -139,7 +153,7 @@ function editOperand_read(line: string): string | null {
  * await lineHostOperations_read('cat x | wc -l'); // nothing: wc is a builtin
  * ```
  */
-export async function lineHostOperations_read(line: string, engineRuns: EngineRuns = builtinCommand_has): Promise<LineHostOperations> {
+export async function lineHostOperations_read(line: string, engineRuns: EngineRuns = localRoute_read): Promise<LineHostOperations> {
   const trimmed: string = line.trim();
   if (trimmed.length === 0 || jobletLine_parse(trimmed) !== null) return NOTHING;
   if (command_shellEscape_detect(trimmed)) {
@@ -179,13 +193,17 @@ async function plainLine_read(line: string): Promise<LineHostOperations> {
  * @param engineRuns - Which words the session's engine runs itself.
  * @returns The host lines, or null.
  */
-async function pipeline_read(segments: readonly string[], engineRuns: (word: string) => boolean): Promise<PipeGrant[] | null> {
+async function pipeline_read(segments: readonly string[], engineRuns: (word: string) => WordRoute): Promise<PipeGrant[] | null> {
   const pipes: PipeGrant[] = [];
   for (let at = 0; at < segments.length; at++) {
     const segment: string = segments[at] ?? '';
     const word: string = pipeSegment_word(segment);
     if (word === '') return null;
-    if (at > 0 && !engineRuns(word)) {
+    const route: WordRoute = engineRuns(word);
+    // A word whose routing is not known (the sides disagree, or its backend's catalogue is not here) makes the
+    // whole pipeline uncertain: neither its segment nor any delegation is granted.
+    if (route === 'unknown') return null;
+    if (at > 0 && route === 'host') {
       if (!shellWords_tokenize(segment).every((one: ShellWord): boolean => one.segments === undefined)) return null;
       pipes.push({ command: segment, required: true });
       continue;

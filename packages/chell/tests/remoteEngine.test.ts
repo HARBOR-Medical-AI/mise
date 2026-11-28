@@ -115,6 +115,7 @@ jest.unstable_mockModule('@fnndsc/brasa', () => ({
   sourceIntents_settle,
   wireName_place,
   builtinCommand_has: (word: string): boolean => LOCAL_WORDS.has(word),
+  coreCommand_has: (word: string): boolean => LOCAL_WORDS.has(word) && word !== 'download',
   lineHostOperations_read: async (line: string, engineRuns: ((word: string) => boolean) | null): Promise<{ shells: string[]; pipes: Array<{ command: string; required: boolean }>; edits: string[] }> => {
     hostReads.push({ line, engineRuns });
     if (readHold !== null) await readHold;
@@ -327,9 +328,12 @@ describe('RemoteEngine live output', () => {
         ws.emit('message', Buffer.from(JSON.stringify({
           type: 'shell', shellId: 'h1', command: 'printf local', lineId: id,
         })));
-        ws.emit('message', Buffer.from(JSON.stringify({
-          type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }],
-        })));
+        // As a daemon does: the line ends after its request is answered.
+        setTimeout(() => {
+          ws.emit('message', Buffer.from(JSON.stringify({
+            type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }],
+          })));
+        }, 10);
       });
     };
 
@@ -399,7 +403,7 @@ describe('RemoteEngine live output', () => {
         ws.emit('message', Buffer.from(JSON.stringify({ type: 'prompt', promptId: 'p1', message: 'Password:', hidden: true })));
         ws.emit('message', Buffer.from(JSON.stringify({ type: 'pipe', pipeId: 'x1', command: 'tr a b', input: Buffer.from('in').toString('base64'), lineId: id })));
         ws.emit('message', Buffer.from(JSON.stringify({ type: 'edit', editId: 'e1', content: 'text', extension: 'md' })));
-        ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] })));
+        setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 10);
       });
     };
 
@@ -1199,11 +1203,11 @@ describe('RemoteEngine live output', () => {
     attachResponse = { ...attachResponse, engineCommands: ['cat', 'grep'] };
     remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
     await remote.line_execute('cat x | tr a b');
-    const said = hostReads[0]?.engineRuns;
-    expect(said?.('grep')).toBe(true);
-    expect(said?.('tr')).toBe(false);
-    // A word this chell knows as the engine's, left off the session's list, is still the engine's: never granted.
-    expect(said?.('wc')).toBe(true);
+    const said = hostReads[0]?.engineRuns as unknown as ((word: string) => string) | undefined;
+    expect(said?.('grep')).toBe('engine');
+    expect(said?.('tr')).toBe('unknown');
+    // A word this chell knows as the engine's, left off the session's list, is not known either way: never granted.
+    expect(said?.('wc')).toBe('unknown');
     remote.close();
     attachResponse = { ...attachResponse, engineCommands: undefined };
     remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token' });
@@ -1351,11 +1355,13 @@ describe('RemoteEngine live output', () => {
           input: Buffer.from('pipeline: test').toString('base64'),
           lineId: id,
         })));
-        ws.emit('message', Buffer.from(JSON.stringify({
+        setTimeout(() => {
+          ws.emit('message', Buffer.from(JSON.stringify({
           type: 'result',
           id,
           envelopes: [{ status: 'error', rendered: '' }],
         })));
+        }, 10);
       });
     };
 

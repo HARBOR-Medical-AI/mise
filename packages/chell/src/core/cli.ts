@@ -238,6 +238,8 @@ export function cliConfig_parse(
         physicalFS: options.physicalFS,
         ...(config.commandToExecute !== undefined ? { commandToExecute: config.commandToExecute } : {}),
         ...(config.stopOnError ? { stopOnError: true } : {}),
+        // Said on the command line, it holds through the door too.
+        ...(options.allowHostRequests === true ? { allowHostRequests: true } : {}),
         ...(options.user !== undefined || options.password !== undefined
           ? { connectConfig: { ...(options.user !== undefined ? { user: options.user } : {}), ...(options.password !== undefined ? { password: options.password } : {}) } }
           : {}),

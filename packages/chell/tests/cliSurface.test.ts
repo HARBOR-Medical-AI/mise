@@ -195,6 +195,21 @@ describe('persistent prompting (REPL interface)', () => {
     expect(typeahead_count()).toBe(0);
   });
 
+  it('a line half typed at the prompt is not the start of a consent answer, on a real terminal readline', async () => {
+    const realReadline = await import('node:readline');
+    const { PassThrough } = await import('node:stream');
+    const input = new PassThrough();
+    const output = new PassThrough();
+    output.resume();
+    const rl = (jest.requireActual('readline') as typeof realReadline).createInterface({ input, output, terminal: true });
+    input.write('y');
+    await new Promise((r) => setTimeout(r, 10));
+    const asking: Promise<string> = cliSurface_create(rl).prompt({ message: 'Allow? ', purpose: 'chell.consent' });
+    input.write('n\n');
+    expect(await asking).toBe('n');
+    rl.close();
+  });
+
   it('a question withdrawn by whoever asked closes, and its promise is refused', async () => {
     typeahead_clear();
     const { EventEmitter } = await import('events');

@@ -323,6 +323,21 @@ export function builtinCommand_names(): string[] {
   return [...new Set([...Object.keys(envelopeHandlers), ...Object.keys(plainHandlers)])].sort();
 }
 
+/**
+ * Whether a word is one of the core's own commands (registered by the engine for every backend), not a backend's.
+ *
+ * @param name - The word.
+ * @returns True for a core command.
+ *
+ * @example
+ * ```ts
+ * coreCommand_has('wc'); // true
+ * ```
+ */
+export function coreCommand_has(name: string): boolean {
+  return coreNames.has(name);
+}
+
 /** @returns The names answered by an envelope handler, in listing order. */
 export function envelopeCommand_names(): string[] {
   return names_ordered(envelopeHandlers, listingOrder.envelope);

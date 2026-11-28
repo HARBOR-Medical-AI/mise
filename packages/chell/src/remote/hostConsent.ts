@@ -14,7 +14,7 @@
  *
  * Key components:
  * - HostConsent: the questions, the answers remembered, and their expiry.
- * - consentText_escape, consentQuestion_render, consentAnswer_read: what is shown, and what an answer means.
+ * - consentText_quote, consentQuestion_render, consentAnswer_read: what is shown, and what an answer means.
  *
  * Typical usage:
  * ```ts
@@ -26,6 +26,8 @@
  *
  * @module
  */
+
+import type { TerminalOwner } from './terminalOwner.js';
 
 /** What kind of thing a request asks this machine to do. */
 export type ConsentKind = 'shell' | 'pipe' | 'edit' | 'deliver' | 'pty';
@@ -51,16 +53,21 @@ export interface ConsentRequest {
   verified: boolean;
   /** What kind of request. */
   kind: ConsentKind;
-  /** What would happen, in words, every untrusted part already quoted with `consentText_escape`. */
+  /** What would happen, in words, every untrusted part already quoted with `consentText_quote`. */
   action: string;
+  /**
+   * What `l` for this request covers besides its kind: for a delivery, its destination and source root, so another
+   * destination or root is asked again. Absent: any request of the kind.
+   */
+  scope?: string;
 }
 
 /** What is known of one line while it runs. */
 interface LineConsent {
   /** The line as this chell sent it. */
   text: string;
-  /** Kinds the person allowed for the rest of the line. */
-  kinds: Set<ConsentKind>;
+  /** Kinds the person allowed for the rest of the line: all of the kind, or only the scopes named. */
+  kinds: Map<ConsentKind, true | Set<string>>;
   /** Whether the person refused the rest of the line. */
   refused: boolean;
   /** How many times they said No on this line. */
@@ -82,20 +89,25 @@ const QUEUE_MAX: number = 8;
 const NOES_MAX: number = 3;
 
 /**
- * Text shown in a question with every character that could move the cursor, recolour, erase or reorder what the
- * person reads made visible as `\uXXXX`: C0 controls, DEL, C1 controls and Unicode format characters (bidi
- * overrides and isolates, zero-width joiners).
+ * Untrusted text as a question shows it: in double quotes, a backslash and a quote escaped, and every character
+ * that could move the cursor, recolour, erase or reorder what the person reads (C0 controls, DEL, C1 controls,
+ * Unicode format characters such as bidi overrides, isolates, zero-width joiners and tags) shown as `\u{hex}` by its
+ * code point. A literal `\u001b` typed in the text and an escape character never read the same.
  *
  * @param text - Untrusted text.
- * @returns The text, safe to show.
+ * @returns It, quoted, safe to show.
  *
  * @example
  * ```ts
- * consentText_escape('ls\u001b[2J'); // 'ls\\u001b[2J'
+ * consentText_quote('ls\u001b[2J'); // '"ls\\u{1b}[2J"'
  * ```
  */
-export function consentText_escape(text: string): string {
-  return text.replace(/[\u0000-\u001f\u007f-\u009f]|\p{Cf}/gu, (one: string): string => `\\u${one.charCodeAt(0).toString(16).padStart(4, '0')}`);
+export function consentText_quote(text: string): string {
+  const shown: string = text.replace(/[\\"]|[\u0000-\u001f\u007f-\u009f]|\p{Cf}/gu, (one: string): string => {
+    if (one === '\\' || one === '"') return `\\${one}`;
+    return `\\u{${(one.codePointAt(0) ?? 0).toString(16)}}`;
+  });
+  return `"${shown}"`;
 }
 
 /**
@@ -111,11 +123,13 @@ export function consentText_escape(text: string): string {
  * ```
  */
 export function consentQuestion_render(asked: ConsentRequest, line: string | undefined): string {
-  const during: string = line !== undefined ? `while running ${JSON.stringify(consentText_escape(line))}` : 'for a request that names no line of this chell (the session is older than this chell)';
+  const during: string = !asked.verified
+    ? `for a request that names no line (the session is older than this chell)${line !== undefined ? `, while running ${consentText_quote(line)}` : ''}`
+    : `while running ${consentText_quote(line ?? '')}`;
   const offers: string[] = asked.verified
     ? [
         'y = yes, this once',
-        `l = yes, and any further ${asked.kind} request of this line, whatever it runs`,
+        `l = yes, and any further ${asked.kind} request of this line${asked.scope !== undefined ? ' to the same place, from the same source' : ', whatever it runs'}`,
         'r = no, and refuse the rest of this line',
         'allow all = let this session run anything it asks on this machine until it disconnects',
         'anything else = no',
@@ -170,9 +184,24 @@ export class HostConsent {
   /**
    * @param ask - Asks on this chell's terminal; null where there is none (then nothing is asked).
    * @param allowAll - `--allow-host-requests`: the session may run anything it asks until it disconnects.
+   * @param owner - Who holds this chell's terminal: a question is put only when it is free.
    */
-  constructor(private readonly ask: ConsentAsk | null, allowAll: boolean) {
+  constructor(private readonly ask: ConsentAsk | null, allowAll: boolean, private readonly owner: TerminalOwner) {
     this.allowedAll = allowAll;
+  }
+
+  /**
+   * Waits until no question is open or waiting, so what the session said meanwhile is shown after it.
+   *
+   * @returns When the last question has closed.
+   *
+   * @example
+   * ```ts
+   * await consent.idle_wait();
+   * ```
+   */
+  public async idle_wait(): Promise<void> {
+    while (this.pending.length > 0) await this.turn;
   }
 
   /**
@@ -229,7 +258,7 @@ export class HostConsent {
    * ```
    */
   public line_open(lineId: string, text: string): void {
-    this.lines.set(lineId, { text, kinds: new Set(), refused: false, noes: 0 });
+    this.lines.set(lineId, { text, kinds: new Map(), refused: false, noes: 0 });
   }
 
   /**
@@ -274,11 +303,12 @@ export class HostConsent {
    * ```
    */
   public async request_decide(asked: ConsentRequest): Promise<boolean> {
+    // Every request asked about is bound to a line of this chell that is running (a legacy one to the sole line).
     const line: LineConsent | undefined = asked.lineId !== undefined ? this.lines.get(asked.lineId) : undefined;
-    if (asked.verified && line === undefined) return false;
+    if (line === undefined) return false;
     if (asked.verified && this.allowedAll) return true;
-    if (line !== undefined && line.refused) return false;
-    if (line !== undefined && line.kinds.has(asked.kind)) return true;
+    if (line.refused) return false;
+    if (asked.verified && scope_allows(line, asked)) return true;
     if (this.ask === null || this.pending.length > QUEUE_MAX) return false;
     const mine: Pending = { lineId: asked.lineId, abort: new AbortController() };
     this.pending.push(mine);
@@ -307,11 +337,16 @@ export class HostConsent {
     const settled: boolean | null = this.request_settled(asked, mine);
     if (settled !== null) return settled;
     const line: LineConsent | undefined = asked.lineId !== undefined ? this.lines.get(asked.lineId) : undefined;
+    // The terminal is the question's alone, or the question is not put: nothing else may answer it.
+    const terminal_release: (() => void) | null = this.owner.terminal_tryTake('question');
+    if (terminal_release === null) return false;
     let typed: string;
     try {
       typed = await (this.ask as ConsentAsk)(consentQuestion_render(asked, line?.text), mine.abort.signal);
     } catch {
       return false;
+    } finally {
+      terminal_release();
     }
     // An answer that arrives after the line ended answers nothing.
     if (this.request_isOver(asked, mine)) return false;
@@ -332,7 +367,7 @@ export class HostConsent {
     const line: LineConsent | undefined = asked.lineId !== undefined ? this.lines.get(asked.lineId) : undefined;
     if (line === undefined) return null;
     if (line.refused) return false;
-    return line.kinds.has(asked.kind) ? true : null;
+    return asked.verified && scope_allows(line, asked) ? true : null;
   }
 
   /**
@@ -343,7 +378,7 @@ export class HostConsent {
    * @returns True when it is over.
    */
   private request_isOver(asked: ConsentRequest, mine: Pending): boolean {
-    return mine.abort.signal.aborted || (asked.verified && !this.lines.has(asked.lineId ?? ''));
+    return mine.abort.signal.aborted || !this.lines.has(asked.lineId ?? '');
   }
 
   /**
@@ -357,7 +392,7 @@ export class HostConsent {
   private answer_apply(answer: ConsentAnswer, asked: ConsentRequest, line: LineConsent | undefined): boolean {
     if (answer === 'once') return true;
     if (answer === 'line' && line !== undefined) {
-      line.kinds.add(asked.kind);
+      scope_allow(line, asked);
       return true;
     }
     if (answer === 'all') {
@@ -381,4 +416,33 @@ export class HostConsent {
     line.refused = true;
     for (const one of this.pending) if (one.lineId === lineId) one.abort.abort();
   }
+}
+
+/**
+ * Whether `l` already given on a line covers a request: its kind, and its scope when the request has one.
+ *
+ * @param line - The line.
+ * @param asked - The request.
+ * @returns True when it does.
+ */
+function scope_allows(line: LineConsent, asked: ConsentRequest): boolean {
+  const allowed: true | Set<string> | undefined = line.kinds.get(asked.kind);
+  if (allowed === undefined) return false;
+  return allowed === true || (asked.scope !== undefined && allowed.has(asked.scope));
+}
+
+/**
+ * Records `l` for a request: its whole kind, or (with a scope) that scope of it.
+ *
+ * @param line - The line.
+ * @param asked - The request.
+ */
+function scope_allow(line: LineConsent, asked: ConsentRequest): void {
+  if (asked.scope === undefined) {
+    line.kinds.set(asked.kind, true);
+    return;
+  }
+  const allowed: true | Set<string> | undefined = line.kinds.get(asked.kind);
+  if (allowed === true) return;
+  line.kinds.set(asked.kind, new Set([...(allowed ?? []), asked.scope]));
 }

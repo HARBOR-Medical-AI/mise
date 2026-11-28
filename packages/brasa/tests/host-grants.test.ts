@@ -32,9 +32,11 @@ describe('lineHostOperations_read', () => {
   });
 
   it('routes by the session\'s own words: a word it runs grants nothing, and a session that said none grants no pipeline', async () => {
-    const sessionRuns = (word: string): boolean => word === 'cat' || word === 'tr';
+    const sessionRuns = (word: string): 'engine' | 'host' | 'unknown' => (word === 'cat' || word === 'tr' ? 'engine' : word === 'mystery' ? 'unknown' : 'host');
     expect((await lineHostOperations_read('cat x | tr a b | sort', sessionRuns)).pipes).toEqual([{ command: 'sort', required: true }]);
     expect(await lineHostOperations_read('cat x | tr a b', null)).toEqual({ shells: [], pipes: [], edits: [] });
+    // A word whose routing is not known makes the whole pipeline uncertain: nothing is granted, delegations neither.
+    expect(await lineHostOperations_read('cat x | sort | mystery | grep -i a', sessionRuns)).toEqual({ shells: [], pipes: [], edits: [] });
     // A `!` line and an edit do not depend on the session's words.
     expect((await lineHostOperations_read('!ls', null)).shells).toEqual(['ls']);
   });

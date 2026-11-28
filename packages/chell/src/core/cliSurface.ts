@@ -101,7 +101,14 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
     // person's word for what a session may run here: only a line typed after
     // the question is shown answers it, and what was typed ahead is dropped.
     if (request.purpose === CONSENT_PURPOSE) {
+      // Lines typed ahead are dropped, and so is a line half typed at the prompt: readline would otherwise hand it
+      // to this question as the start of its answer.
       typeahead_clear();
+      // (A terminal readline edits its line; one on a pipe holds none to clear, and consent is never asked there.)
+      if (rl.terminal) {
+        rl.write(null, { ctrl: true, name: 'e' });
+        rl.write(null, { ctrl: true, name: 'u' });
+      }
     } else {
       const ahead: string | undefined = typeahead_take();
       if (ahead !== undefined) {
@@ -215,6 +222,16 @@ function oneShotLine_read(rl: readline.Interface, message: string, done: () => v
 }
 
 /**
+ * Drops what an input already holds, unread, so only what is typed after a question answers it.
+ *
+ * @param input - The input.
+ */
+function input_drain(input: NodeJS.ReadableStream): void {
+  // (Node's types say read never gives null; a drained stream does.)
+  for (let chunk: unknown = input.read(); chunk !== null; chunk = input.read()) { /* dropped */ }
+}
+
+/**
  * Prompts on a one-shot readline interface created for this call, used
  * outside the REPL (execute and script modes). Hidden input is read through
  * a muted output stream so the entry is not echoed. An input that has
@@ -232,6 +249,8 @@ export async function oneShotPrompt_ask(request: PromptRequest, input: NodeJS.Re
   }
   if (!request.hidden) {
     const shown: { message: string; fallback: string } = promptLine_render(request);
+    // What was typed before a question about what a session may run is not its answer: dropped unread.
+    if (request.purpose === CONSENT_PURPOSE) input_drain(input);
     const rl: readline.Interface = readline.createInterface({ input, output: process.stdout });
     // Withdrawn by whoever asked: the interface closes and the question fails.
     request.signal?.addEventListener('abort', (): void => { rl.close(); }, { once: true });

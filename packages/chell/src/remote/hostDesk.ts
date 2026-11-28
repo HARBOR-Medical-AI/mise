@@ -27,9 +27,10 @@ import type { FileDeliverRequest, FileDeliverResult } from '@fnndsc/menu';
 import type { LocalEditResult } from '@fnndsc/menu/surface';
 import chalk from 'chalk';
 
-import { consentText_escape, type ConsentKind, type HostConsent } from './hostConsent.js';
+import { consentText_quote, type ConsentKind, type HostConsent } from './hostConsent.js';
 import { HostGrantBook, type HostAsk } from './hostGrants.js';
 import type { HostPtyRelay } from './hostPty.js';
+import type { TerminalOwner } from './terminalOwner.js';
 import { deliveryPlace_resolve, type PlacedDelivery } from '../core/deliveryPlace.js';
 
 /**
@@ -37,7 +38,7 @@ import { deliveryPlace_resolve, type PlacedDelivery } from '../core/deliveryPlac
  *
  * @example
  * ```ts
- * const desk: HostDesk = new HostDesk({ message_send, consent, hostPty: null, terminal_isBusy: () => false });
+ * const desk: HostDesk = new HostDesk({ message_send, consent, hostPty: null, owner, connection_fail });
  * ```
  */
 export interface HostDeskOptions {
@@ -47,8 +48,10 @@ export interface HostDeskOptions {
   consent: HostConsent;
   /** The relay that hands this terminal to a program on the daemon's pty, when this chell is in a terminal. */
   hostPty: HostPtyRelay | null;
-  /** Whether another reader holds the terminal (a daemon's question is open): then nothing is put to the person. */
-  terminal_isBusy: () => boolean;
+  /** Who holds this chell's terminal: a question, a host command, the editor, a handed-over program, a prompt. */
+  owner: TerminalOwner;
+  /** Ends the connection: the session asked more than this chell will remember. */
+  connection_fail: (reason: string) => void;
   /** Runs a pipeline segment here. */
   segment_run?: (command: string, input: Buffer) => Promise<Buffer>;
   /** Runs a host command here. */
@@ -72,7 +75,7 @@ interface DeliveryRefusal {
  *
  * @example
  * ```ts
- * const desk: HostDesk = new HostDesk({ message_send, consent, hostPty, terminal_isBusy: () => false });
+ * const desk: HostDesk = new HostDesk({ message_send, consent, hostPty, owner, connection_fail });
  * ```
  */
 export class HostDesk {
@@ -86,6 +89,8 @@ export class HostDesk {
   private readonly ptyByLine: Map<string, string> = new Map();
   /** Request ids already answered on this connection: each is answered once. */
   private readonly answered: Set<string> = new Set();
+  /** The hand-back of the terminal for each program it is handed to. */
+  private readonly ptyRelease: Map<string, () => void> = new Map();
 
   /**
    * @param options - How requests are run and answered.
@@ -135,7 +140,10 @@ export class HostDesk {
       this.options.consent.line_close(one);
       const ptyId: string | undefined = this.ptyByLine.get(one);
       this.ptyByLine.delete(one);
-      if (ptyId !== undefined) this.options.hostPty?.exit(ptyId);
+      if (ptyId !== undefined) {
+        this.options.hostPty?.exit(ptyId);
+        this.pty_end(ptyId);
+      }
     }
   }
 
@@ -155,7 +163,8 @@ export class HostDesk {
   public async pipe_run(pipeId: string, command: string, input: string, lineId: string | undefined): Promise<void> {
     try {
       this.id_take('pipe', pipeId);
-      await this.host_allow(lineId, { kind: 'pipe', command }, 'pipe', `run the pipeline segment ${text_quote(command)} on this machine`);
+      const line: string = await this.host_allow(lineId, { kind: 'pipe', command }, 'pipe', `run the pipeline segment ${text_quote(command)} on this machine`);
+      this.line_require(line);
       if (!this.options.segment_run) throw new Error('this surface cannot run pipeline segments');
       const output: Buffer = await this.options.segment_run(command, Buffer.from(input, 'base64'));
       this.options.message_send({ type: 'pipeResult', pipeId, output: output.toString('base64') });
@@ -179,9 +188,11 @@ export class HostDesk {
   public async shell_run(shellId: string, command: string, lineId: string | undefined): Promise<void> {
     try {
       this.id_take('shell', shellId);
-      await this.host_allow(lineId, { kind: 'shell', command }, 'shell', `run the host command ${text_quote(command)} on this machine`);
+      const line: string = await this.host_allow(lineId, { kind: 'shell', command }, 'shell', `run the host command ${text_quote(command)} on this machine`);
       if (!this.options.shellCommand_run) throw new Error('this surface cannot run shell commands');
-      const exitCode: number = await this.options.shellCommand_run(command);
+      const command_run: (command: string) => Promise<number> = this.options.shellCommand_run;
+      // The command has the terminal to itself, after any question open on it; the line is rechecked once it has.
+      const exitCode: number = await this.terminal_run('shell', line, (): Promise<number> => command_run(command));
       this.options.message_send({ type: 'shellResult', shellId, exitCode });
     } catch (error: unknown) {
       this.options.message_send({ type: 'shellError', shellId, reason: reason_read(error) });
@@ -205,9 +216,12 @@ export class HostDesk {
   public async edit_run(editId: string, content: string, named: string | undefined, lineId: string | undefined): Promise<void> {
     try {
       this.id_take('edit', editId);
-      await this.host_allow(lineId, { kind: 'edit', named }, 'edit', `open this machine's editor on ${named === undefined ? 'an unnamed file' : text_quote(named)}`);
+      // A request that names no file cannot be described, so it is not put to the person.
+      if (named === undefined) throw new Error('refused: the session asked to open an editor here on a file it did not name; nothing ran');
+      const line: string = await this.host_allow(lineId, { kind: 'edit', named }, 'edit', `open this machine's editor on ${text_quote(named)}`);
       if (!this.options.editor_open) throw new Error('this surface cannot edit');
-      const result: LocalEditResult = await this.options.editor_open(content, editSuffix_read(named));
+      const editor_run: (content: string, extension: string | undefined) => Promise<LocalEditResult> = this.options.editor_open;
+      const result: LocalEditResult = await this.terminal_run('edit', line, (): Promise<LocalEditResult> => editor_run(content, editSuffix_read(named)));
       this.options.message_send({ type: 'editResult', editId, content: result.content, changed: result.changed });
     } catch (error: unknown) {
       this.options.message_send({ type: 'editError', editId, reason: reason_read(error) });
@@ -234,8 +248,14 @@ export class HostDesk {
       // Placed here, or refused, before anything else: a name with no place inside its folder never runs.
       const place: string = deliveryPlace_resolve(request.destination, request.filename);
       const refused: DeliveryRefusal | null = this.delivery_check(lineId, request);
-      if (refused !== null) await this.consent_require(lineId, refused.reason, refused.askable, 'deliver', `write the file ${text_quote(request.filename)} from the session's ${text_quote(request.path)} to ${text_quote(place)} on this machine`);
-      this.place_reserve(lineId, place, request.filename);
+      // `l` for a delivery covers this destination and this source root only.
+      const scope: string = `${request.destination ?? ''}\u0000${request.source ?? ''}`;
+      const line: string | undefined = refused === null
+        ? lineId
+        : await this.consent_require(lineId, refused.reason, refused.askable, 'deliver', `write the file ${text_quote(request.filename)} from the session's ${text_quote(request.path)} (its source ${text_quote(request.source ?? 'not named')}) to ${text_quote(place)} on this machine`, scope);
+      if (line === undefined) throw new Error(refused?.reason ?? 'refused: no line');
+      this.line_require(line);
+      this.place_reserve(line, place, request.filename);
       const placed: PlacedDelivery = { ...request, place };
       const result: FileDeliverResult = await this.options.file_deliver(placed);
       this.options.message_send({ type: 'deliverResult', deliverId, location: result.location, bytes: result.bytes });
@@ -266,12 +286,20 @@ export class HostDesk {
       // Granted, the terminal is handed over at once (the program's first output follows straight after);
       // only a request no grant covers waits for the person.
       const refusal: string | null = this.grants.grant_take(lineId, { kind: 'shell', command });
-      if (refusal !== null) {
-        const askable: boolean = lineId !== undefined ? this.grants.line_has(lineId) : this.grants.lines_count() === 1;
-        await this.consent_require(lineId, refusal, askable, 'pty', `hand this terminal to the program ${text_quote(command)}, which runs on the session's machine and receives every key typed here until it ends`);
+      const line: string | undefined = refusal === null
+        ? lineId
+        : await this.consent_require(lineId, refusal, this.line_effective(lineId) !== undefined, 'pty', `hand this terminal to the program ${text_quote(command)}, which runs on the session's machine and receives every key typed here until it ends`);
+      if (line === undefined) throw new Error(refusal ?? 'refused: no line');
+      // The terminal is handed over only when it is free (after any question or command holding it), and stays the
+      // program's until it ends or its line does.
+      const terminal_release: (() => void) | null = this.options.owner.terminal_tryTake('pty');
+      if (terminal_release === null) throw new Error('refused: this terminal is held (a question, a command or another program has it); nothing was handed over');
+      if (!this.grants.line_has(line)) {
+        terminal_release();
+        throw new Error('refused: the line has ended; nothing was handed over');
       }
-      if (lineId === undefined || !this.intents.has(lineId)) throw new Error('refused: the line has ended; nothing was handed over');
-      this.ptyByLine.set(lineId, ptyId);
+      this.ptyRelease.set(ptyId, terminal_release);
+      this.ptyByLine.set(line, ptyId);
       this.options.hostPty.start(ptyId);
     } catch (error: unknown) {
       const reason: string = reason_read(error);
@@ -290,7 +318,67 @@ export class HostDesk {
   private id_take(kind: string, id: string): void {
     const key: string = `${kind}:${id}`;
     if (this.answered.has(key)) throw new Error(`refused: the session sent request ${text_quote(id)} again; nothing ran`);
+    // Remembered for the connection, and bounded: a session that asks more than this is not served further.
+    if (this.answered.size >= ANSWERED_MAX) {
+      this.options.connection_fail(`the session sent more than ${String(ANSWERED_MAX)} requests on one connection`);
+      throw new Error('refused: the session has asked more than this chell answers on one connection; reconnect');
+    }
     this.answered.add(key);
+  }
+
+  /**
+   * The terminal is free again: the program it was handed to has ended.
+   *
+   * @param ptyId - The program's id.
+   *
+   * @example
+   * ```ts
+   * desk.pty_end('p1');
+   * ```
+   */
+  public pty_end(ptyId: string): void {
+    this.ptyRelease.get(ptyId)?.();
+    this.ptyRelease.delete(ptyId);
+  }
+
+  /**
+   * The line a request is bound to: the one it names when that is running here, else (a request that names none,
+   * from an older daemon) the sole line running, else none.
+   *
+   * @param lineId - The line the session names.
+   * @returns The running line, or undefined.
+   */
+  private line_effective(lineId: string | undefined): string | undefined {
+    if (lineId !== undefined) return this.grants.line_has(lineId) ? lineId : undefined;
+    return this.grants.lines_count() === 1 ? this.grants.line_sole() : undefined;
+  }
+
+  /**
+   * Refuses to go on when a request's line has ended (checked immediately before anything runs).
+   *
+   * @param line - The line.
+   * @throws {Error} When it is no longer running.
+   */
+  private line_require(line: string): void {
+    if (!this.grants.line_has(line)) throw new Error('refused: the line that asked has ended; nothing ran');
+  }
+
+  /**
+   * Runs something that needs the terminal: after whoever holds it, with the line rechecked once it is had.
+   *
+   * @param who - What runs.
+   * @param line - Its line.
+   * @param run - The run.
+   * @returns What the run gives.
+   */
+  private async terminal_run<T>(who: 'shell' | 'edit', line: string, run: () => Promise<T>): Promise<T> {
+    const terminal_release: () => void = await this.options.owner.terminal_take(who);
+    try {
+      this.line_require(line);
+      return await run();
+    } finally {
+      terminal_release();
+    }
   }
 
   /**
@@ -301,13 +389,13 @@ export class HostDesk {
    * @param ask - The request, for the grant.
    * @param kind - Its kind, for the question.
    * @param action - What would happen, in words.
+   * @returns The running line it is bound to.
    * @throws {Error} When neither allows it.
    */
-  private async host_allow(lineId: string | undefined, ask: HostAsk, kind: ConsentKind, action: string): Promise<void> {
+  private async host_allow(lineId: string | undefined, ask: HostAsk, kind: ConsentKind, action: string): Promise<string> {
     const refusal: string | null = this.grants.grant_take(lineId, ask);
-    if (refusal === null) return;
-    const askable: boolean = lineId !== undefined ? this.grants.line_has(lineId) : this.grants.lines_count() === 1;
-    await this.consent_require(lineId, refusal, askable, kind, action);
+    if (refusal === null && lineId !== undefined) return lineId;
+    return await this.consent_require(lineId, refusal ?? 'refused', this.line_effective(lineId) !== undefined, kind, action);
   }
 
   /**
@@ -318,14 +406,18 @@ export class HostDesk {
    * @param askable - Whether it may be put to them at all (a line of this chell is pending, or a legacy request with one).
    * @param kind - Its kind.
    * @param action - What would happen, in words.
+   * @param scope - What `l` for it covers besides its kind (a delivery's destination and source).
+   * @returns The running line it is bound to.
    * @throws {Error} With the refusal, when not allowed.
    */
-  private async consent_require(lineId: string | undefined, refusal: string, askable: boolean, kind: ConsentKind, action: string): Promise<void> {
-    if (!askable || this.options.terminal_isBusy()) throw new Error(refusal);
-    const verified: boolean = lineId !== undefined && this.grants.line_has(lineId);
-    const allowed: boolean = await this.options.consent.request_decide({ lineId, verified, kind, action });
+  private async consent_require(lineId: string | undefined, refusal: string, askable: boolean, kind: ConsentKind, action: string, scope?: string): Promise<string> {
+    const line: string | undefined = this.line_effective(lineId);
+    if (!askable || line === undefined) throw new Error(refusal);
+    const verified: boolean = lineId !== undefined;
+    const allowed: boolean = await this.options.consent.request_decide({ lineId: line, verified, kind, action, ...(scope !== undefined ? { scope } : {}) });
     // Rechecked after the answer: a line that ended meanwhile asks for nothing.
-    if (!allowed || (verified && !this.grants.line_has(lineId ?? ''))) throw new Error(refusal);
+    if (!allowed || !this.grants.line_has(line)) throw new Error(refusal);
+    return line;
   }
 
   /**
@@ -339,7 +431,7 @@ export class HostDesk {
     const where: string = request.destination !== undefined && request.destination.length > 0 ? JSON.stringify(request.destination) : 'the working directory';
     const asked: string = `the session asked to write ${JSON.stringify(request.filename)} to ${where}`;
     if (lineId === undefined) {
-      return { reason: `refused: ${asked} and did not say which line asked for it, so it cannot be told from a delivery that is late or was never asked for; nothing was written. The session's daemon is older than this chell: upgrade the daemon`, askable: this.grants.lines_count() === 1 };
+      return { reason: `refused: ${asked} and did not say which line asked for it, so it cannot be told from a delivery that is late or was never asked for; nothing was written. The session's daemon is older than this chell: upgrade the daemon`, askable: this.line_effective(undefined) !== undefined };
     }
     const intents: DeliveryIntent[] | undefined = this.intents.get(lineId);
     if (intents === undefined) return { reason: `refused: ${asked} for a line that is not running here; nothing was written`, askable: false };
@@ -364,8 +456,8 @@ export class HostDesk {
    * @param filename - The file's name, for the words.
    * @throws {Error} When the line has written that place already.
    */
-  private place_reserve(lineId: string | undefined, place: string, filename: string): void {
-    const key: string = lineId ?? '';
+  private place_reserve(lineId: string, place: string, filename: string): void {
+    const key: string = lineId;
     const written: Set<string> = this.written.get(key) ?? new Set<string>();
     if (written.has(place)) throw new Error(`refused: the session asked to write ${JSON.stringify(filename)} to ${JSON.stringify(place)}, which this line has written already; nothing was written`);
     written.add(place);
@@ -380,8 +472,11 @@ export class HostDesk {
  * @returns It, quoted.
  */
 function text_quote(text: string): string {
-  return JSON.stringify(consentText_escape(text));
+  return consentText_quote(text);
 }
+
+/** The most request ids one connection is answered for. */
+const ANSWERED_MAX: number = 100_000;
 
 /**
  * The words of what was thrown.
