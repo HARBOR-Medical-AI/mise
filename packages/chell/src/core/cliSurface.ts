@@ -19,6 +19,7 @@ import { Writable } from 'stream';
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from 'child_process';
 import { readFileSync } from 'fs';
 import * as fs from 'fs/promises';
+import { ReadStream } from 'node:tty';
 import * as path from 'path';
 import type { Surface, SurfaceCapabilities, PromptRequest, LocalEditRequest, LocalEditResult } from '@fnndsc/brasa';
 import { segment_pipeThrough, file_read, privateTemp_write, suffix_safe, type PrivateTemp } from '@fnndsc/brasa';
@@ -161,8 +162,24 @@ function persistentPrompt_ask(rl: readline.Interface, request: PromptRequest): P
   Reflect.set(rl, '_writeToOutput', (_str: string): void => { /* suppress echo */ });
 
   terminalState_mark('asking');
-  return new Promise((resolve: (answer: string) => void) => {
-    rl.question('', (answer: string) => {
+  return new Promise((resolve: (answer: string) => void, reject: (error: Error) => void) => {
+    // Withdrawn by whoever asked (the connection closed): the entry goes, unread, and echo comes back.
+    const abandon: AbortController = new AbortController();
+    const secret_withdraw = (): void => {
+      Reflect.set(rl, '_writeToOutput', originalWrite);
+      if (rl.terminal) rl.write(null, { ctrl: true, name: 'u' });
+      terminalState_mark('busy');
+      process.stdout.write('\n');
+      abandon.abort();
+      reject(new Error('the question was withdrawn'));
+    };
+    if (request.signal?.aborted === true) {
+      secret_withdraw();
+      return;
+    }
+    request.signal?.addEventListener('abort', secret_withdraw, { once: true });
+    rl.question('', { signal: abandon.signal }, (answer: string) => {
+      request.signal?.removeEventListener('abort', secret_withdraw);
       Reflect.set(rl, '_writeToOutput', originalWrite);
       // readline keeps every line it reads for recall, a hidden one included:
       // a secret is taken out again, so the up arrow never brings it back.
@@ -231,6 +248,37 @@ function input_drain(input: NodeJS.ReadableStream): void {
   for (let chunk: unknown = input.read(); chunk !== null; chunk = input.read()) { /* dropped */ }
 }
 
+/** How long a terminal must be quiet before a consent question is put: what it held arrives before then. */
+const SETTLE_QUIET_MS: number = 40;
+/** The longest a consent question waits for a terminal to go quiet. */
+const SETTLE_MAX_MS: number = 1000;
+
+/**
+ * Drops what a terminal still holds for its reader: switched to raw mode, its line buffer (a whole line or half of
+ * one, typed before the question) is handed over at once, and everything arriving until it is quiet is dropped.
+ * Not a terminal: nothing to do.
+ *
+ * @param input - The input.
+ * @returns When the terminal is quiet.
+ */
+async function terminalInput_settle(input: NodeJS.ReadableStream): Promise<void> {
+  if (!(input instanceof ReadStream)) return;
+  const wasRaw: boolean = input.isRaw;
+  input.setRawMode(true);
+  const started: number = Date.now();
+  let last: number = started;
+  // Every chunk is dropped; its arrival only puts the question off.
+  const chunk_drop = (): void => { last = Date.now(); };
+  input.on('data', chunk_drop);
+  input.resume();
+  while (Date.now() - last < SETTLE_QUIET_MS && Date.now() - started < SETTLE_MAX_MS) {
+    await new Promise<void>((done: () => void): void => { setTimeout(done, 10); });
+  }
+  input.off('data', chunk_drop);
+  input.pause();
+  input.setRawMode(wasRaw);
+}
+
 /**
  * Prompts on a one-shot readline interface created for this call, used
  * outside the REPL (execute and script modes). Hidden input is read through
@@ -249,8 +297,12 @@ export async function oneShotPrompt_ask(request: PromptRequest, input: NodeJS.Re
   }
   if (!request.hidden) {
     const shown: { message: string; fallback: string } = promptLine_render(request);
-    // What was typed before a question about what a session may run is not its answer: dropped unread.
-    if (request.purpose === CONSENT_PURPOSE) input_drain(input);
+    // What was typed before a question about what a session may run is not its answer: dropped unread, what Node
+    // holds and, on a terminal, what the terminal still holds (a whole line or half of one).
+    if (request.purpose === CONSENT_PURPOSE) {
+      input_drain(input);
+      await terminalInput_settle(input);
+    }
     const rl: readline.Interface = readline.createInterface({ input, output: process.stdout });
     // Withdrawn by whoever asked: the interface closes and the question fails.
     request.signal?.addEventListener('abort', (): void => { rl.close(); }, { once: true });
@@ -264,6 +316,7 @@ export async function oneShotPrompt_ask(request: PromptRequest, input: NodeJS.Re
     },
   });
   const rl: readline.Interface = readline.createInterface({ input, output: muted, terminal: true });
+  request.signal?.addEventListener('abort', (): void => { rl.close(); }, { once: true });
   process.stdout.write(request.message);
   const secret: string = await oneShotLine_read(rl, '', (): void => { process.stdout.write('\n'); });
   return secret.trim();

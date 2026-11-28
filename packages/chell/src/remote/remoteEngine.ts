@@ -39,7 +39,7 @@ export interface RemoteEngineOptions {
   /** The daemon says whether its own code on disk still matches what it runs. */
   onStale?: (stale: boolean) => void;
   /** Answers a prompt the daemon raised during a command (password, confirmation). */
-  onPrompt?: (message: string, hidden: boolean) => Promise<string>;
+  onPrompt?: (message: string, hidden: boolean, signal?: AbortSignal) => Promise<string>;
   /** Runs a pipeline segment on this machine and returns its output. */
   onPipe?: (command: string, input: Buffer) => Promise<Buffer>;
   /** Runs a host-shell command on this machine and returns its exit code. */
@@ -96,7 +96,7 @@ export class RemoteEngine implements BrasaEngine {
   /** Message types from a newer daemon, each noted once then skipped. */
   private readonly unknownTypesSeen: Set<string> = new Set<string>();
   private readonly onSession: ((surface: string, envelope: CommandEnvelope) => void) | undefined;
-  private readonly onPrompt: ((message: string, hidden: boolean) => Promise<string>) | undefined;
+  private readonly onPrompt: ((message: string, hidden: boolean, signal?: AbortSignal) => Promise<string>) | undefined;
   private readonly onPipe: ((command: string, input: Buffer) => Promise<Buffer>) | undefined;
   private readonly onShell: ((command: string) => Promise<number>) | undefined;
   private readonly onEdit: ((content: string, extension: string | undefined) => Promise<{ content: string; changed: boolean }>) | undefined;
@@ -126,6 +126,8 @@ export class RemoteEngine implements BrasaEngine {
   private engineRuns: EngineRuns = null;
   /** Whether the connection has closed: a line read after it is not sent. */
   private closed: boolean = false;
+  /** Aborted when the connection closes: withdraws the session's own questions. */
+  private readonly connectionGone: AbortController = new AbortController();
   /** The session folder this chell last showed (the pushed prompt context); a relative download source binds under it. */
   private sessionCwd: string | null = null;
   /** Lines being read before they are sent, and those cancelled meanwhile (never sent). */
@@ -174,9 +176,10 @@ export class RemoteEngine implements BrasaEngine {
       hostPty: this.hostPty,
       owner: this.owner,
       connection_fail: (reason: string): void => {
-        console.error(chalk.red(`[!] ${reason}: closing the connection`));
+        this.notice_show(chalk.red(`[!] ${reason}: closing the connection`));
         this.close();
       },
+      notice_show: (text: string): void => { this.notice_show(text); },
       ...handlers_compose(options),
     });
   }
@@ -349,30 +352,62 @@ export class RemoteEngine implements BrasaEngine {
     // What this line asks to have written here (its sources settled against the session folder shown now): a
     // delivery is honoured only against this. Registered with its grants immediately before the line is sent.
     this.desk.line_open(id, line, operations, sourceIntents_settle(deliveryIntents_read(line, this.backendId), this.sessionCwd));
+    let envelopes: CommandEnvelope[];
     try {
-      const envelopes: CommandEnvelope[] = await this.request<CommandEnvelope[]>('execute', { line }, id);
-      // A daemon that names no status leaves the envelopes to say it.
-      this.lastExit = this.resultExits.get(id) ?? (envelopes.some((envelope: CommandEnvelope): boolean => envelope.status === 'error') ? 1 : 0);
-      const liveChannels: Set<'data' | 'err'> | undefined = this.liveEnvelopeChannels.get(id);
-      this.liveEnvelopeChannels.delete(id);
-      // The line has settled; what it said is shown once no question is open, never over one.
+      envelopes = await this.request<CommandEnvelope[]>('execute', { line }, id);
+    } catch (error: unknown) {
+      // Retired at once; the failure is shown once no question is open, never over one.
+      this.line_settle(id);
       await this.consent.idle_wait();
-      // Deliver to the active sink exactly as the in-process engine delivers
-      // live, so the REPL host renders remote output without any change.
-      for (const envelope of envelopes) {
-        envelope_deliver(liveChannels ? {
-          ...envelope,
-          rendered: liveChannels.has('data') ? '' : envelope.rendered,
-          renderedErr: liveChannels.has('err') ? undefined : envelope.renderedErr,
-        } : envelope);
-      }
-      return envelopes;
-    } finally {
-      if (this.activeExecuteId === id) this.activeExecuteId = undefined;
-      this.requestSinks.delete(id);
-      this.line_retire(id);
-      this.resultExits.delete(id);
+      throw error;
     }
+    // A daemon that names no status leaves the envelopes to say it.
+    this.lastExit = this.resultExits.get(id) ?? (envelopes.some((envelope: CommandEnvelope): boolean => envelope.status === 'error') ? 1 : 0);
+    const liveChannels: Set<'data' | 'err'> | undefined = this.liveEnvelopeChannels.get(id);
+    this.liveEnvelopeChannels.delete(id);
+    this.line_settle(id);
+    // The line is retired at once; what it said is shown once no question is open, never over one.
+    await this.consent.idle_wait();
+    // Deliver to the active sink exactly as the in-process engine delivers
+    // live, so the REPL host renders remote output without any change.
+    for (const envelope of envelopes) {
+      envelope_deliver(liveChannels ? {
+        ...envelope,
+        rendered: liveChannels.has('data') ? '' : envelope.rendered,
+        renderedErr: liveChannels.has('err') ? undefined : envelope.renderedErr,
+      } : envelope);
+    }
+    return envelopes;
+  }
+
+  /**
+   * A line has its answer (or its failure): it is no longer this chell's active line, and it is retired at once.
+   *
+   * @param id - The line.
+   */
+  private line_settle(id: string): void {
+    if (this.activeExecuteId === id) this.activeExecuteId = undefined;
+    this.requestSinks.delete(id);
+    this.line_retire(id);
+    this.resultExits.delete(id);
+  }
+
+  /**
+   * Whether the connection has closed (read afresh: it closes while a question waits).
+   *
+   * @returns True once it has.
+   */
+  private connection_isGone(): boolean {
+    return this.connectionGone.signal.aborted;
+  }
+
+  /**
+   * Shows a note to the person, never over an open question: after it, when one is open.
+   *
+   * @param text - The note.
+   */
+  private notice_show(text: string): void {
+    void this.consent.idle_wait().then((): void => { console.error(text); });
   }
 
   /**
@@ -411,6 +446,8 @@ export class RemoteEngine implements BrasaEngine {
   private line_retire(lineId?: string): void {
     if (lineId === undefined) {
       this.closed = true;
+      // The session's own questions, waiting or open, are withdrawn: no answer goes to a closed connection.
+      this.connectionGone.abort();
       // What the session said before it went is not replayed after.
       this.held.length = 0;
       this.heldBytes = 0;
@@ -483,15 +520,13 @@ export class RemoteEngine implements BrasaEngine {
       if (unknownType !== undefined) {
         if (!this.unknownTypesSeen.has(unknownType)) {
           this.unknownTypesSeen.add(unknownType);
-          console.error(chalk.dim(
-            `[i] The daemon sends '${unknownType}' messages this chell predates; ignoring them.`,
-          ));
+          this.notice_show(chalk.dim(`[i] The daemon sends '${unknownType}' messages this chell predates; ignoring them.`));
         }
         return;
       }
       // A malformed message is real protocol drift; dropping it silently
       // would leave any correlated pending request hanging unexplained.
-      console.error(chalk.yellow(`[!] Ignoring invalid message from calypso: ${parsed.ok ? 'empty payload' : (parsed.error ?? 'unparseable')}`));
+      this.notice_show(chalk.yellow(`[!] Ignoring invalid message from calypso: ${parsed.ok ? 'empty payload' : (parsed.error ?? 'unparseable')}`));
       return;
     }
     const message: ServerMessage = parsed.value;
@@ -609,16 +644,20 @@ export class RemoteEngine implements BrasaEngine {
         // input; an inability to prompt is a failure and reports as one.
         throw new Error('this surface cannot prompt');
       }
-      // The session's own question holds the terminal, after whoever holds it: nothing is asked over it.
-      const terminal_release: () => void = await this.owner.terminal_take('prompt');
+      // The session's own question holds the terminal, after whoever holds it: nothing is asked over it, and a
+      // connection that closes meanwhile withdraws it, waiting or open.
+      const gone: AbortSignal = this.connectionGone.signal;
+      const terminal_release: () => void = await this.owner.terminal_take('prompt', gone);
       let answer: string;
       try {
-        answer = await this.onPrompt(message, hidden);
+        answer = await this.onPrompt(message, hidden, gone);
       } finally {
         terminal_release();
       }
+      if (this.connection_isGone()) return;
       this.ws.send(JSON.stringify({ type: 'promptAnswer', promptId, answer }));
     } catch (error: unknown) {
+      if (this.connection_isGone()) return;
       const reason: string = error instanceof Error ? error.message : String(error);
       this.ws.send(JSON.stringify({ type: 'promptError', promptId, reason }));
     }
@@ -712,7 +751,7 @@ function safeJson_parse(text: string): unknown {
 const HELD_BYTES_MAX: number = 1024 * 1024;
 
 /** Messages that are never held while a question is open: a line's end, and requests (which queue their own). */
-const HELD_PASSES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'shell', 'pipe', 'edit', 'deliver']);
+const HELD_PASSES: ReadonlySet<string> = new Set(['result', 'error', 'complete', 'shell', 'pipe', 'edit', 'deliver', 'hostPtyExit']);
 
 /**
  * Whether a message of the session's goes through while a question is open.

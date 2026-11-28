@@ -26,6 +26,8 @@ import { deliveryIntent_matches, deliverySource_matches, type DeliveredFile, typ
 import type { FileDeliverRequest, FileDeliverResult } from '@fnndsc/menu';
 import type { LocalEditResult } from '@fnndsc/menu/surface';
 import chalk from 'chalk';
+import { createHash } from 'node:crypto';
+import * as path from 'node:path';
 
 import { consentText_quote, type ConsentKind, type HostConsent } from './hostConsent.js';
 import { HostGrantBook, type HostAsk } from './hostGrants.js';
@@ -38,7 +40,7 @@ import { deliveryPlace_resolve, type PlacedDelivery } from '../core/deliveryPlac
  *
  * @example
  * ```ts
- * const desk: HostDesk = new HostDesk({ message_send, consent, hostPty: null, owner, connection_fail });
+ * const desk: HostDesk = new HostDesk({ message_send, consent, hostPty: null, owner, connection_fail, notice_show });
  * ```
  */
 export interface HostDeskOptions {
@@ -52,6 +54,8 @@ export interface HostDeskOptions {
   owner: TerminalOwner;
   /** Ends the connection: the session asked more than this chell will remember. */
   connection_fail: (reason: string) => void;
+  /** Shows a note to the person, never over an open question. */
+  notice_show: (text: string) => void;
   /** Runs a pipeline segment here. */
   segment_run?: (command: string, input: Buffer) => Promise<Buffer>;
   /** Runs a host command here. */
@@ -75,7 +79,7 @@ interface DeliveryRefusal {
  *
  * @example
  * ```ts
- * const desk: HostDesk = new HostDesk({ message_send, consent, hostPty, owner, connection_fail });
+ * const desk: HostDesk = new HostDesk({ message_send, consent, hostPty, owner, connection_fail, notice_show });
  * ```
  */
 export class HostDesk {
@@ -87,8 +91,10 @@ export class HostDesk {
   private readonly written: Map<string, Set<string>> = new Map();
   /** The program each line's terminal is handed to. */
   private readonly ptyByLine: Map<string, string> = new Map();
-  /** Request ids already answered on this connection: each is answered once. */
+  /** Request ids already answered on this connection, each by a fixed-size digest: each is answered once. */
   private readonly answered: Set<string> = new Set();
+  /** Programs asked to be handed the terminal and not yet handed it; one that ends meanwhile is never handed it. */
+  private readonly ptyPending: Set<string> = new Set();
   /** The hand-back of the terminal for each program it is handed to. */
   private readonly ptyRelease: Map<string, () => void> = new Map();
 
@@ -248,11 +254,12 @@ export class HostDesk {
       // Placed here, or refused, before anything else: a name with no place inside its folder never runs.
       const place: string = deliveryPlace_resolve(request.destination, request.filename);
       const refused: DeliveryRefusal | null = this.delivery_check(lineId, request);
-      // `l` for a delivery covers this destination and this source root only.
-      const scope: string = `${request.destination ?? ''}\u0000${request.source ?? ''}`;
+      // `l` for a delivery covers one folder here and files from inside one source; a file not inside the source it
+      // names is offered for this once only.
+      const scope: string | null = deliveryScope_read(place, request);
       const line: string | undefined = refused === null
         ? lineId
-        : await this.consent_require(lineId, refused.reason, refused.askable, 'deliver', `write the file ${text_quote(request.filename)} from the session's ${text_quote(request.path)} (its source ${text_quote(request.source ?? 'not named')}) to ${text_quote(place)} on this machine`, scope);
+        : await this.consent_require(lineId, refused.reason, refused.askable, 'deliver', `write the file ${text_quote(request.filename)} from the session's ${text_quote(request.path)} (its source ${text_quote(request.source ?? 'not named')}${scope === null ? ', which it is not inside' : ''}) to ${text_quote(place)} on this machine`, scope ?? undefined, scope === null);
       if (line === undefined) throw new Error(refused?.reason ?? 'refused: no line');
       this.line_require(line);
       this.place_reserve(line, place, request.filename);
@@ -286,10 +293,13 @@ export class HostDesk {
       // Granted, the terminal is handed over at once (the program's first output follows straight after);
       // only a request no grant covers waits for the person.
       const refusal: string | null = this.grants.grant_take(lineId, { kind: 'shell', command });
+      this.ptyPending.add(ptyId);
       const line: string | undefined = refusal === null
         ? lineId
         : await this.consent_require(lineId, refusal, this.line_effective(lineId) !== undefined, 'pty', `hand this terminal to the program ${text_quote(command)}, which runs on the session's machine and receives every key typed here until it ends`);
       if (line === undefined) throw new Error(refusal ?? 'refused: no line');
+      // A program that ended while its hand-over waited is not handed the terminal.
+      if (!this.ptyPending.delete(ptyId)) throw new Error('refused: the program ended before it was handed the terminal; nothing was handed over');
       // The terminal is handed over only when it is free (after any question or command holding it), and stays the
       // program's until it ends or its line does.
       const terminal_release: (() => void) | null = this.options.owner.terminal_tryTake('pty');
@@ -303,7 +313,8 @@ export class HostDesk {
       this.options.hostPty.start(ptyId);
     } catch (error: unknown) {
       const reason: string = reason_read(error);
-      console.error(chalk.red(`[!] ${reason}`));
+      this.ptyPending.delete(ptyId);
+      this.options.notice_show(chalk.red(`[!] ${reason}`));
       this.options.message_send({ type: 'hostPtyRefuse', ptyId, reason });
     }
   }
@@ -316,7 +327,8 @@ export class HostDesk {
    * @throws {Error} When it was answered before.
    */
   private id_take(kind: string, id: string): void {
-    const key: string = `${kind}:${id}`;
+    // A digest, so what is remembered is bounded by count alone, whatever length an id the session sends.
+    const key: string = createHash('sha256').update(`${kind}:${id}`).digest('base64');
     if (this.answered.has(key)) throw new Error(`refused: the session sent request ${text_quote(id)} again; nothing ran`);
     // Remembered for the connection, and bounded: a session that asks more than this is not served further.
     if (this.answered.size >= ANSWERED_MAX) {
@@ -337,6 +349,7 @@ export class HostDesk {
    * ```
    */
   public pty_end(ptyId: string): void {
+    this.ptyPending.delete(ptyId);
     this.ptyRelease.get(ptyId)?.();
     this.ptyRelease.delete(ptyId);
   }
@@ -406,15 +419,16 @@ export class HostDesk {
    * @param askable - Whether it may be put to them at all (a line of this chell is pending, or a legacy request with one).
    * @param kind - Its kind.
    * @param action - What would happen, in words.
-   * @param scope - What `l` for it covers besides its kind (a delivery's destination and source).
+   * @param scope - What `l` for it covers besides its kind (a delivery's folder here and source).
+   * @param onceOnly - Only `y` is offered (what `l` would cover cannot be bound).
    * @returns The running line it is bound to.
    * @throws {Error} With the refusal, when not allowed.
    */
-  private async consent_require(lineId: string | undefined, refusal: string, askable: boolean, kind: ConsentKind, action: string, scope?: string): Promise<string> {
+  private async consent_require(lineId: string | undefined, refusal: string, askable: boolean, kind: ConsentKind, action: string, scope?: string, onceOnly?: boolean): Promise<string> {
     const line: string | undefined = this.line_effective(lineId);
     if (!askable || line === undefined) throw new Error(refusal);
     const verified: boolean = lineId !== undefined;
-    const allowed: boolean = await this.options.consent.request_decide({ lineId: line, verified, kind, action, ...(scope !== undefined ? { scope } : {}) });
+    const allowed: boolean = await this.options.consent.request_decide({ lineId: line, verified, kind, action, ...(scope !== undefined ? { scope } : {}), ...(onceOnly === true ? { onceOnly } : {}) });
     // Rechecked after the answer: a line that ended meanwhile asks for nothing.
     if (!allowed || !this.grants.line_has(line)) throw new Error(refusal);
     return line;
@@ -498,4 +512,28 @@ function editSuffix_read(named: string | undefined): string {
   const base: string = named === undefined ? '' : (named.split('/').pop() ?? '');
   const dot: number = base.lastIndexOf('.');
   return dot > 0 ? base.slice(dot) : '.txt';
+}
+
+/**
+ * What `l` for a delivery covers: the folder here the file goes into and the source it comes from, when the file
+ * is inside that source by its path and its name is its path inside it; else null (it is offered once only).
+ *
+ * @param place - Where it goes, resolved here.
+ * @param request - The delivery.
+ * @returns The scope, or null.
+ */
+function deliveryScope_read(place: string, request: FileDeliverRequest): string | null {
+  if (request.source === undefined || request.source.length === 0) return null;
+  // Shaped as brasa shapes it: the file is the source itself, or is at its name inside the source.
+  const parts: string[] = request.filename.split('/');
+  if (request.filename.length === 0 || parts.some((part: string): boolean => part === '' || part === '.' || part === '..')) return null;
+  const normalised: string = path.posix.normalize(request.source);
+  const root: string = normalised === '/' ? '/' : normalised.replace(/\/+$/, '');
+  const from: string = path.posix.normalize(request.path);
+  const inside: boolean = (from === root && path.posix.basename(root) === request.filename) || from === `${root === '/' ? '' : root}/${request.filename}`;
+  if (!inside) return null;
+  const local: string = path.resolve(place);
+  const tail: string = `${path.sep}${parts.join(path.sep)}`;
+  const folder: string = local.endsWith(tail) ? local.slice(0, local.length - tail.length) : path.dirname(local);
+  return `${folder}\u0000${root}`;
 }

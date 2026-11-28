@@ -1241,6 +1241,53 @@ describe('RemoteEngine live output', () => {
       };
     };
 
+    it('a failed line is shown only once an open question closes', async () => {
+      let answer_give: ((typed: string) => void) | null = null;
+      const onConsent = (_question: string): Promise<string> => new Promise<string>((resolve) => { answer_give = resolve; });
+      scenario = (ws: FakeWebSocket, sent: Record<string, unknown>): void => {
+        if (sent.type !== 'execute') return;
+        const id = String(sent.id);
+        process.nextTick(() => {
+          if (sent.line === 'boom') {
+            ws.emit('message', Buffer.from(JSON.stringify({ type: 'error', id, reason: 'the line failed' })));
+            return;
+          }
+          ws.emit('message', Buffer.from(JSON.stringify({ type: 'shell', shellId: `${id}-0`, command: 'make', lineId: id })));
+          setTimeout(() => { ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', id, envelopes: [{ status: 'ok', rendered: '' }] }))); }, 80);
+        });
+      };
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onShell: async (): Promise<number> => 0, consentAsk: onConsent });
+      const asking: Promise<unknown> = remote.line_execute('play build.sh');
+      await new Promise((r) => setTimeout(r, 20));
+      let failed: string | null = null;
+      const failing: Promise<void> = remote.line_execute('boom').then(() => undefined, (error: Error) => { failed = error.message; });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(failed).toBeNull();
+      (answer_give as unknown as (typed: string) => void)('n');
+      await failing;
+      expect(failed).toContain('the line failed');
+      await asking;
+    });
+
+    it('a closed connection withdraws the session\'s prompt, open or waiting, and answers neither', async () => {
+      const signals: AbortSignal[] = [];
+      const onPrompt = (_message: string, _hidden: boolean, signal?: AbortSignal): Promise<string> => new Promise<string>((_resolve, reject) => {
+        if (signal !== undefined) signals.push(signal);
+        signal?.addEventListener('abort', () => { reject(new Error('the question was withdrawn')); });
+      });
+      remote = await RemoteEngine.connect({ url: 'ws://127.0.0.1:1', token: 'token', onPrompt });
+      const ws: FakeWebSocket = FakeWebSocket.instances[FakeWebSocket.instances.length - 1] as FakeWebSocket;
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'prompt', promptId: 'q1', message: 'Name:', hidden: false })));
+      ws.emit('message', Buffer.from(JSON.stringify({ type: 'prompt', promptId: 'q2', message: 'Password:', hidden: true })));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(signals).toHaveLength(1);
+      remote.close();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(signals[0]?.aborted).toBe(true);
+      expect(signals).toHaveLength(1);
+      expect(ws.sent.filter((one) => one.type === 'promptAnswer' || one.type === 'promptError')).toEqual([]);
+    });
+
     it('a host step after && runs on yes, once; the line\'s other requests are asked again, and none of the next line\'s are remembered', async () => {
       const shell = jest.fn(async (_command: string): Promise<number> => 0);
       const { onConsent, questions } = consent_make(['y', 'n']);
@@ -1400,11 +1447,14 @@ describe('RemoteEngine live output', () => {
     // warning per arrival (the heartbeat case: one per second, mid-input).
     ws.emit('message', Buffer.from(JSON.stringify({ type: 'from-the-future' })));
     ws.emit('message', Buffer.from(JSON.stringify({ type: 'from-the-future' })));
+    // Notes are shown once no question is open (here, at once: after the current turn).
+    await new Promise((r) => setTimeout(r, 0));
     expect(spy).toHaveBeenCalledTimes(1);
     expect(String(spy.mock.calls[0]?.[0])).toContain('from-the-future');
 
     // A malformed message of a KNOWN type is real drift: still loud.
     ws.emit('message', Buffer.from(JSON.stringify({ type: 'result', __malformed: true })));
+    await new Promise((r) => setTimeout(r, 0));
     expect(spy).toHaveBeenCalledTimes(2);
     expect(String(spy.mock.calls[1]?.[0])).toContain('Ignoring invalid message from calypso');
 

@@ -35,7 +35,7 @@ export class TerminalOwner {
   /** Who holds it now, or null. */
   private holder: TerminalHolder | null = null;
   /** Those waiting, in order. */
-  private readonly waiting: Array<() => void> = [];
+  private readonly waiting: Waiter[] = [];
 
   /**
    * Who holds the terminal now.
@@ -52,28 +52,36 @@ export class TerminalOwner {
   }
 
   /**
-   * Takes the terminal, waiting for whoever holds it; resolves with the hand-back.
+   * Takes the terminal, waiting for whoever holds it; resolves with the hand-back. The terminal passes straight to
+   * the next in line when it is given back, so no one can take it between.
    *
    * @param who - Who takes it.
+   * @param signal - Withdraws the wait (the connection closed): it then rejects and holds nothing.
    * @returns The call that gives it back (once).
+   * @throws {Error} When withdrawn before it was had.
    *
    * @example
    * ```ts
    * const release: () => void = await owner.terminal_take('edit');
    * ```
    */
-  public async terminal_take(who: TerminalHolder): Promise<() => void> {
-    if (this.holder !== null || this.waiting.length > 0) {
-      await new Promise<void>((resolve: () => void): void => { this.waiting.push(resolve); });
+  public async terminal_take(who: TerminalHolder, signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted === true) throw new Error('withdrawn: the terminal was not taken');
+    if (this.holder === null && this.waiting.length === 0) {
+      this.holder = who;
+      return this.handBack_make();
     }
-    this.holder = who;
-    let given: boolean = false;
-    return (): void => {
-      if (given) return;
-      given = true;
-      this.holder = null;
-      this.waiting.shift()?.();
-    };
+    await new Promise<void>((resolve: () => void, reject: (error: Error) => void): void => {
+      const waiter: Waiter = { who, turn_give: (): void => { resolve(); } };
+      this.waiting.push(waiter);
+      signal?.addEventListener('abort', (): void => {
+        const at: number = this.waiting.indexOf(waiter);
+        if (at < 0) return;
+        this.waiting.splice(at, 1);
+        reject(new Error('withdrawn: the terminal was not taken'));
+      }, { once: true });
+    });
+    return this.handBack_make();
   }
 
   /**
@@ -90,12 +98,30 @@ export class TerminalOwner {
   public terminal_tryTake(who: TerminalHolder): (() => void) | null {
     if (this.holder !== null || this.waiting.length > 0) return null;
     this.holder = who;
+    return this.handBack_make();
+  }
+
+  /**
+   * The once-only hand-back of the terminal: to the next in line (who holds it from that moment), else free.
+   *
+   * @returns The hand-back.
+   */
+  private handBack_make(): () => void {
     let given: boolean = false;
     return (): void => {
       if (given) return;
       given = true;
-      this.holder = null;
-      this.waiting.shift()?.();
+      const next: Waiter | undefined = this.waiting.shift();
+      this.holder = next?.who ?? null;
+      next?.turn_give();
     };
   }
+}
+
+/** One waiting for the terminal. */
+interface Waiter {
+  /** Who waits. */
+  who: TerminalHolder;
+  /** Lets it go on, holding the terminal. */
+  turn_give: () => void;
 }

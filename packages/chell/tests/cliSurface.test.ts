@@ -70,6 +70,12 @@ beforeEach(() => {
   writeSpy = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
 });
 
+
+/** Answers a readline question double the way readline takes it: `(query, cb)` or `(query, options, cb)`. */
+function answer_with(given: unknown[], answer: (cb: (a: string) => void) => void): void {
+  answer(given[given.length - 1] as (a: string) => void);
+}
+
 describe('cliSurface capabilities', () => {
   it('declares local input and editing, and a tty matching stdout', () => {
     const caps = cliSurface_create().capabilities;
@@ -174,7 +180,7 @@ describe('persistent prompting (REPL interface)', () => {
     expect(question_isOpen()).toBe(false);
     typeahead_push('not-a-password');
     const hidden = {
-      question: jest.fn((_p: string, cb: (a: string) => void) => cb('secret')),
+      question: jest.fn((_p: string, ...given: unknown[]) => answer_with(given, (cb: (a: string) => void) => cb('secret'))),
     } as unknown as import('readline').Interface;
     Reflect.set(hidden, '_writeToOutput', (): void => undefined);
     expect(await cliSurface_create(hidden).prompt({ message: 'Password: ', hidden: true })).toBe('secret');
@@ -244,11 +250,11 @@ describe('persistent prompting (REPL interface)', () => {
     let suppressedDuringQuestion: boolean | undefined;
     const rl = {
       _writeToOutput: original,
-      question: jest.fn((_p: string, cb: (a: string) => void) => {
+      question: jest.fn((_p: string, ...given: unknown[]) => answer_with(given, (cb: (a: string) => void) => {
         // Capture whether the echo hook was swapped out while awaiting input.
         suppressedDuringQuestion = (rl as unknown as { _writeToOutput: unknown })._writeToOutput !== original;
         cb('secret');
-      }),
+      })),
     };
     const answer = await cliSurface_create(rl as unknown as import('readline').Interface)
       .prompt({ message: 'Password: ', hidden: true });
@@ -273,12 +279,12 @@ describe('persistent prompting (REPL interface)', () => {
       history: ['an earlier line'],
       _writeToOutput: jest.fn(),
       // readline keeps the line it read before it hands it over, as the real one does.
-      question: jest.fn((_p: string, cb: (a: string) => void) => { rl.history.unshift('hunter2'); cb('hunter2'); }),
+      question: jest.fn((_p: string, ...given: unknown[]) => answer_with(given, (cb: (a: string) => void) => { rl.history.unshift('hunter2'); cb('hunter2'); })),
     };
     expect(await cliSurface_create(rl as unknown as import('readline').Interface).prompt({ message: 'Password: ', hidden: true })).toBe('hunter2');
     expect(rl.history).toEqual(['an earlier line']);
     // An empty answer was never kept, and nothing else is taken.
-    rl.question.mockImplementation((_p: string, cb: (a: string) => void) => { cb(''); });
+    rl.question.mockImplementation((_p: string, ...given: unknown[]) => answer_with(given, (cb: (a: string) => void) => { cb(''); }));
     await cliSurface_create(rl as unknown as import('readline').Interface).prompt({ message: 'Password: ', hidden: true });
     expect(rl.history).toEqual(['an earlier line']);
   });

@@ -60,6 +60,8 @@ export interface ConsentRequest {
    * destination or root is asked again. Absent: any request of the kind.
    */
   scope?: string;
+  /** Only `y` is offered and read: what `l` would cover cannot be told from this request (a file whose source is unbound). */
+  onceOnly?: boolean;
 }
 
 /** What is known of one line while it runs. */
@@ -129,7 +131,7 @@ export function consentQuestion_render(asked: ConsentRequest, line: string | und
   const offers: string[] = asked.verified
     ? [
         'y = yes, this once',
-        `l = yes, and any further ${asked.kind} request of this line${asked.scope !== undefined ? ' to the same place, from the same source' : ', whatever it runs'}`,
+        ...(asked.onceOnly === true ? [] : [`l = yes, and any further ${asked.kind} request of this line${asked.scope !== undefined ? ' to the same folder here, from inside the same source' : ', whatever it runs'}`]),
         'r = no, and refuse the rest of this line',
         'allow all = let this session run anything it asks on this machine until it disconnects',
         'anything else = no',
@@ -350,7 +352,9 @@ export class HostConsent {
     }
     // An answer that arrives after the line ended answers nothing.
     if (this.request_isOver(asked, mine)) return false;
-    return this.answer_apply(consentAnswer_read(typed, asked.verified), asked, line);
+    const answer: ConsentAnswer = consentAnswer_read(typed, asked.verified);
+    // `l` is not offered for a request it could not be bound to; typed anyway, it is a No.
+    return this.answer_apply(answer === 'line' && asked.onceOnly === true ? 'no' : answer, asked, line);
   }
 
   /**

@@ -122,7 +122,7 @@ describe('HostConsent', () => {
     expect(await consent.request_decide(asked({ kind: 'deliver', scope: './out|/home/me/x' }))).toBe(true);
     expect(await consent.request_decide(asked({ kind: 'deliver', scope: '~/.ssh|/home/me/x' }))).toBe(false);
     expect(questions).toHaveLength(2);
-    expect(questions[0]).toContain('to the same place, from the same source');
+    expect(questions[0]).toContain('to the same folder here, from inside the same source');
   });
 
   it('a request from an older daemon is bound to the sole running line: that line\'s end withdraws its question', async () => {

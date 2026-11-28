@@ -312,10 +312,11 @@ export async function remote_run(
             }
           }
         : undefined,
-      onPrompt: (message: string, hidden: boolean): Promise<string> =>
+      onPrompt: (message: string, hidden: boolean, signal?: AbortSignal): Promise<string> =>
         // The REPL has installed the CLI surface (readline-backed) by the time
-        // a prompt can arrive, so this reads from the local terminal.
-        surface_get().prompt({ message, hidden }),
+        // a prompt can arrive, so this reads from the local terminal; a closed
+        // connection withdraws it.
+        surface_get().prompt({ message, hidden, ...(signal !== undefined ? { signal } : {}) }),
       onPipe: (command: string, input: Buffer): Promise<Buffer> =>
         // Pipeline segments run on this machine, through the client's own
         // tools — never on the daemon host.
