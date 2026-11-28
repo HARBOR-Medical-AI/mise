@@ -14,6 +14,7 @@ import { doorApp_build as porterApp_build } from './fromDoor.js';
 import type { Berth, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
 import type { PorterConfig } from '../../src/config.js';
 import { CredentialStore } from '../../src/creds.js';
+import { GrantStore } from '../../src/grants.js';
 
 const OWNER: string = 'rudolph@https://cube.example.org/api/v1/';
 const STRATUS: string = `stratus:oci@${OWNER}`;
@@ -68,6 +69,38 @@ function creds_file(): void {
 }
 
 describe('POST /switch', () => {
+  it('a switch whose write is under way when a logout arrives wins: the logout, its own write failing, stops no berth', async () => {
+    creds_file();
+    await door.app.close();
+    let evicts: number = 0;
+    host.evict = async (): Promise<boolean> => { evicts += 1; return true; };
+    let hold: Promise<void> | null = null;
+    let holding: boolean = false;
+    let fail: boolean = false;
+    const grants: GrantStore = new GrantStore(join(stateDir, 'race-grants.json'), 24, undefined, async (path: string, body: string): Promise<void> => {
+      const failing: boolean = fail;
+      const held: Promise<void> | null = hold;
+      hold = null;
+      if (held !== null) { holding = true; await held; }
+      if (failing) throw new Error('the disk is full');
+      writeFileSync(path, body, { mode: 0o600 });
+    });
+    door = await porterApp_build({ installed: {}, logoutEnds: true, config, host, grants, mint: async () => ({ token: 'T' }) });
+    const cookie: string = await login();
+    let release: () => void = (): void => undefined;
+    hold = new Promise<void>((resolve: () => void): void => { release = resolve; });
+    const switching = door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
+    for (let i = 0; i < 100 && !holding; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(holding).toBe(true);
+    fail = true;
+    const leaving = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie } });
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    expect((await switching).json()).toMatchObject({ state: 'starting' });
+    expect((await leaving).statusCode).toBe(409);
+    expect(evicts).toBe(0);
+  });
+
   it('ends the boot stream of the browser that switched, its follow let go, and leaves another browser\'s on the same session', async () => {
     creds_file();
     await door.app.close();

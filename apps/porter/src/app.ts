@@ -72,12 +72,12 @@ import { identity_normalise } from '@fnndsc/calypso/berth';
 import type { PorterConfig } from './config.js';
 import { identity_isStratus, owner_extract, stratusIdentity_derive, user_extract, type SessionHost, type Berth, type BootLine, type BootReport, type RestartWhy } from './host/sessionHost.js';
 import { CredentialStore } from './creds.js';
-import { SessionRegistry, type SessionEntry } from './registry.js';
+import { SessionRegistry, type DisplacedLife, type SessionEntry } from './registry.js';
 import { cubeAdmin_check, cubeToken_mint, type AdminVerdict, type TokenMint } from './cube/auth.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DOOR_COOKIE, doorCookie_options } from './door.js';
-import { FrameCloser, GrantStore, grantCookie_read, grantCookie_value, type DoorGrant, type GrantNamed } from './grants.js';
+import { FrameCloser, GrantStore, grantCookie_read, grantCookie_value, type DoorGrant, type GrantNamed, type GrantRevocation } from './grants.js';
 import { loginPage_render, greetPage_render, authorisedPage_render } from './greeter.js';
 import { DeviceCodes, TokenStore, token_looksLike, type DeviceClaim, type DeviceGrant, type RenewalOutcome, type DoorToken, type MintedToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
@@ -267,20 +267,14 @@ export function cookie_carried(cookieHeader: string | undefined): boolean {
   return cookieHeader.split(';').some((part: string): boolean => part.slice(0, Math.max(0, part.indexOf('='))).trim() === DOOR_COOKIE);
 }
 
-/** A berth stop a logout owes: the session key, and the life of the session that stood under it when the logout came. */
-interface OwedStop {
+/** What a logout saw of its session when it arrived: whose berth it may stop. */
+interface LogoutArrival {
   /** The session key. */
   key: string;
-  /** The life then (`SessionRegistry.life_get`), or null when no session was recorded. */
+  /** The life that stood (`SessionRegistry.life_get`), booting or up, or null when none was recorded. */
   life: number | null;
-}
-
-/** What a logout's berth stop came to. */
-interface LogoutLeave {
-  /** Whether the logout's grant was owed a stop (it stood when the logout came). */
-  owed: boolean;
-  /** Why the berth was not stopped, when it was owed and could not be. */
-  unstopped: string | null;
+  /** The berth that life's boot was to replace (a restart under way), or null. */
+  displaced: DisplacedLife | null;
 }
 
 /** A request's headers, as far as the door's cookie is concerned. */
@@ -386,8 +380,6 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   if (tokens.legacyNote !== null) options.log?.(tokens.legacyNote);
   if (tokens.skipped.length > 0) options.log?.(`the door's token store holds ${String(tokens.skipped.length)} record(s) of the wrong shape, left out: ${tokens.skipped.join(', ')}`);
   const codes: DeviceCodes = options.codes ?? new DeviceCodes(options.now);
-  // The berth stops owed by logouts of grants that stood, by grant: one each, kept across a logout whose write failed.
-  const stopsOwed: Map<string, OwedStop> = new Map();
   // Renewals waiting to be dropped: those whose code lapsed untaken, and those a drop failed for, kept for the next tick.
   let dropsHeld: MintedToken[] = [];
   let dropping: boolean = false;
@@ -453,9 +445,9 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
    */
   const entry_recover = async (entry: SessionEntry): Promise<'moved' | 'same' | 'gone'> => {
     const found: Berth | null = await host.find(entry.identity);
-    // The answer is of the life the relay held: one that ended or was replaced meanwhile (a restart's boot, say)
-    // is not this answer's to forget or to note over; the browser is sent to look again.
-    if (registry.life_get(entry.key) !== entry.life) return 'moved';
+    // The answer is of the entry the relay held: one that ended, was replaced (a restart's boot, say) or was
+    // confirmed afresh meanwhile is not this answer's to forget or to note over; the browser is sent to look again.
+    if (registry.get(entry.key) !== entry) return 'moved';
     if (found === null) {
       registry.forget(entry.key);
       options.log?.(`${entry.user}'s session at ${entry.berth.url} is gone; forgot it`);
@@ -1087,17 +1079,17 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
    * Stops the berth of a session that is logging out, as the key's one ending under way: a login that
    * arrives meanwhile waits for it, the sweep claims nothing, and a restart comes before or after it.
    *
-   * @param key - The session key.
+   * @param arrival - What the logout saw when it arrived.
    * @param identity - The session.
-   * @param still - Whether the stop is still owed, asked again just before the berth is stopped.
    * @returns Null when the stop went through (or there was nothing to stop); otherwise why the berth was not stopped.
    */
-  const logout_stop = async (key: string, identity: string, still: () => boolean = (): boolean => true): Promise<string | null> => {
+  const logout_stop = async (arrival: LogoutArrival, identity: string): Promise<string | null> => {
+    const key: string = arrival.key;
     try {
-      // The ending can wait its turn behind another: whether the stop is still owed is asked again as it begins,
-      // and the entry it ended is retired before the next in line begins, so that one asks about what is left.
+      // The ending can wait its turn behind another (a restart): what the logout may stop is asked as it begins,
+      // and the life it ended is retired before the next in line begins, so that one asks about what is left.
       const ended: boolean = await registry.ending_run(key, async (): Promise<boolean> => {
-        if (!still()) return false;
+        if (!(await arrival_stands(arrival, identity))) return false;
         const was: number | null = registry.life_get(key);
         const stopped: boolean = await host.evict(identity, 'end');
         // The life that was ended is retired, a boot as much as a berth, and only that one: a restart or a login
@@ -1116,34 +1108,39 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   };
 
   /**
-   * Records the berth stop a logout owes: a logout of a grant that stands now owes one stop of the berth that
-   * stands under it now (on a door that stops berths), owed once, kept across a write that fails, paid by whichever
-   * logout of that grant gets through, and never by one of a grant that had already expired, ended or moved.
+   * Whether what stands under a logout's key now is what the logout may stop, by when it arrived:
    *
-   * @param held - The grant the logout's cookie named, if any.
+   * - the life it came to, booting or up: a boot it arrived during is stopped in whatever berth it leaves running;
+   * - it came during a restart whose stop failed, and the berth before is found again with its own life back;
+   * - it came to a berth that a restart has since begun to replace, the outcome not yet seen: the host says what is
+   *   up, and only that very berth (its address and attach token) is the logout's.
+   *
+   * Anything begun in its place since (a replacement the restart made, another login's boot) is not.
+   *
+   * @param arrival - What the logout saw when it arrived.
+   * @param identity - The session.
+   * @returns True when the logout may stop what stands.
    */
-  const stop_owe = (held: GrantNamed | null): void => {
-    if (held === null || stopsOwed.has(held.id) || !grants.grant_admits(held.id, held.key)) return;
-    stopsOwed.set(held.id, { key: held.key, life: registry.life_get(held.key) });
+  const arrival_stands = async (arrival: LogoutArrival, identity: string): Promise<boolean> => {
+    const now: number | null = registry.life_get(arrival.key);
+    if (now === null || arrival.life === null) return false;
+    if (now === arrival.life) return true;
+    if (arrival.displaced !== null && now === arrival.displaced.life) return true;
+    const displaced: DisplacedLife | null = registry.displaced_get(arrival.key);
+    if (displaced === null || displaced.life !== arrival.life) return false;
+    const up: Berth | null = await host.find(identity);
+    return up !== null && up.url === displaced.berth.url && up.token === displaced.berth.token;
   };
 
   /**
-   * Pays the berth stop a logout's grant was owed, if it was: once, by the first logout of that grant to get through.
+   * Stops a logging-out session's berth, on a door that stops berths.
    *
-   * @param held - The grant the logout's cookie named, if any.
-   * @returns Whether a stop was owed, and why the berth was not stopped when it was owed and is not.
+   * @param arrival - What the logout saw when it arrived.
+   * @returns Why the berth was not stopped, or null.
    */
-  const logout_leave = async (held: GrantNamed | null): Promise<LogoutLeave> => {
-    const owed: OwedStop | undefined = held === null ? undefined : stopsOwed.get(held.id);
-    if (held === null || owed === undefined) return { owed: false, unstopped: null };
-    stopsOwed.delete(held.id);
-    // The stop is owed to the life of the session that stood when the logout came (its boot, and the berth that
-    // boot came to): one found or started in its place under the same key since is not this logout's to stop.
-    const life: number | null = owed.life;
-    const stop_isOwed = (): boolean => life !== null && registry.life_get(owed.key) === life;
-    if (!stop_isOwed()) return { owed: true, unstopped: null };
-    const identity: string | null = options.logoutEnds === true ? registry.identity_find(owed.key) : null;
-    return { owed: true, unstopped: identity === null ? null : await logout_stop(owed.key, identity, stop_isOwed) };
+  const logout_berthStop = async (arrival: LogoutArrival): Promise<string | null> => {
+    const identity: string | null = options.logoutEnds === true ? registry.identity_find(arrival.key) : null;
+    return identity === null ? null : await logout_stop(arrival, identity);
   };
 
   app.post('/logout', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
@@ -1151,28 +1148,29 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // The person is logged out of the door either way.
     // Any cookie this door signed may ask, admitted or not: a logout whose write failed is asked again by the same cookie.
     const held: GrantNamed | null = cookieGrant_read(request.headers.cookie, config.secret);
-    stop_owe(held);
-    // The grant ends first: this cookie lets nobody in from now on, and what was opened under it is closed.
-    let ended: 'ended' | 'moved' | 'gone' = 'gone';
-    if (held !== null) {
-      try {
-        ended = await grants.grant_end(held.id);
-      } catch (error: unknown) {
-        options.log?.(`a logout could not be written: ${error instanceof Error ? error.message : String(error)}; the cookie is refused here meanwhile`);
-        return reply.code(503).send({ error: 'the door could not record your logout; it refuses this browser meanwhile; log out again' });
-      }
+    if (held === null) {
+      void reply.clearCookie(DOOR_COOKIE, { path: '/' });
+      return request_wantsJson(request) ? { ok: true } : reply.redirect('/login', 303);
     }
-    // A switch moved this browser's grant while it logged out: the cookie it holds now is the switch's, and stays.
-    if (ended === 'moved') {
-      if (held !== null) stopsOwed.delete(held.id);
-      return reply.code(409).send({ error: 'this browser switched session while it logged out; log out again' });
+    // What stands under the key as the logout arrives is what it may stop; a grant past its hour stops nothing.
+    const arrival: LogoutArrival | null = grants.grant_admits(held.id, held.key) ? { key: held.key, life: registry.life_get(held.key), displaced: registry.displaced_get(held.key) } : null;
+    // The grant ends first: this cookie lets nobody in from now on, and what was opened under it is closed. Of
+    // every request that ends or moves it, one is told it decided that, whether or not its write went through.
+    const revoked: GrantRevocation = await grants.grant_revoke(held.id);
+    // A switch moved this browser's grant first: the cookie it holds now is the switch's, and stays.
+    if (revoked.outcome === 'moved') return reply.code(409).send({ error: 'this browser switched session while it logged out; log out again' });
+    // The berth is stopped by the one request that ended the grant, in that request, write or no write.
+    const unstopped: string | null = revoked.decided && arrival !== null ? await logout_berthStop(arrival) : null;
+    const berthSaid: Record<string, string> = unstopped === null ? {} : { berth: 'not stopped', reason: unstopped };
+    if (revoked.unwritten !== null) {
+      options.log?.(`a logout could not be written: ${revoked.unwritten.message}; the cookie is refused here meanwhile`);
+      return reply.code(503).send({ error: 'the door could not record your logout; it refuses this browser meanwhile; log out again', ...berthSaid });
     }
-    const leaving: LogoutLeave = await logout_leave(held);
-    // A cookie whose grant this logout did not end (one gone already: after a restart, or a second switch) is left
-    // as the browser holds it: it may be the cookie a switch set since.
-    if (held === null || ended === 'ended' || leaving.owed) void reply.clearCookie(DOOR_COOKIE, { path: '/' });
+    // A cookie whose grant this door no longer held (after a restart, or a second switch) is left as the browser
+    // holds it: it may be the cookie a switch set since.
+    if (revoked.outcome === 'ended') void reply.clearCookie(DOOR_COOKIE, { path: '/' });
     if (!request_wantsJson(request)) return reply.redirect('/login', 303);
-    return leaving.unstopped === null ? { ok: true } : { ok: true, berth: 'not stopped', reason: leaving.unstopped };
+    return { ok: true, ...berthSaid };
   });
 
   app.get('/boot/:key', async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {

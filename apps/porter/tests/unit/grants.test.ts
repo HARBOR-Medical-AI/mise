@@ -190,7 +190,9 @@ describe('what Codex found in the first form (seq 419)', () => {
     expect(grants.grant_admits(a.id, KEY)).toBe(false);
     // The file still holds it: a restart now would let it in, so the logout is asked again.
     expect(readFileSync(path, 'utf8')).toContain(a.id);
+    // The retry writes the end; the first logout's turn decided it.
     expect(await grants.grant_end(a.id)).toBe('ended');
+    expect(readFileSync(path, 'utf8')).not.toContain(a.id);
     const again: GrantStore = new GrantStore(path, 8);
     await again.grants_load();
     expect(again.grant_admits(a.id, KEY)).toBe(false);
@@ -251,5 +253,43 @@ describe('closeReason_bytes', () => {
     expect(closeReason_bytes('😀'.repeat(40)).length).toBeLessThanOrEqual(CLOSE_REASON_MAX_BYTES);
     // The frame's length byte stays a length: no mask bit.
     expect(2 + closeReason_bytes('€'.repeat(50)).length).toBeLessThan(126);
+  });
+});
+
+describe('grant_revoke', () => {
+  it('tells exactly one request it ended a grant, through a failed write, and a switch that won tells the logout it moved', async () => {
+    const dir2: string = mkdtempSync(join(tmpdir(), 'porter-revoke-'));
+    const fail: Set<number> = new Set();
+    let writes: number = 0;
+    let hold: Promise<void> | null = null;
+    const grants: GrantStore = new GrantStore(join(dir2, 'g.json'), 8, undefined, async (path: string, body: string): Promise<void> => {
+      writes += 1;
+      const mine: number = writes;
+      if (hold !== null) await hold;
+      if (fail.has(mine)) throw new Error('the disk is full');
+      writeFileSync(path, body, { mode: 0o600 });
+    });
+    const a = await grants.grant_make(KEY);
+    // Two logouts at once, the first one's write failing: one is told it ended the grant.
+    fail.add(writes + 1);
+    const [first, second] = await Promise.all([grants.grant_revoke(a.id), grants.grant_revoke(a.id)]);
+    expect([first.outcome, second.outcome]).toEqual(['ended', 'ended']);
+    expect([first.decided, second.decided]).toEqual([true, false]);
+    expect(first.unwritten?.message).toBe('the disk is full');
+    expect(second.unwritten).toBeNull();
+    // A switch whose write is in its turn first, then a logout whose write fails: the logout is told the grant moved.
+    const b = await grants.grant_make(KEY);
+    let release: () => void = (): void => undefined;
+    hold = new Promise<void>((resolve: () => void): void => { release = resolve; });
+    const before: number = writes;
+    const moving = grants.grant_move(b.id, 'fedcba9876543210');
+    for (let i = 0; i < 50 && writes === before; i++) await new Promise((r) => setTimeout(r, 5));
+    // The switch's write is under way; the logout arrives and its own write will fail.
+    fail.add(before + 2);
+    const revoking = grants.grant_revoke(b.id);
+    hold = null;
+    release();
+    expect(await moving).not.toBeNull();
+    expect(await revoking).toMatchObject({ outcome: 'moved' });
   });
 });

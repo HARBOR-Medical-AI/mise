@@ -38,8 +38,13 @@ interface PendingEntry {
   replaces?: DisplacedLife;
 }
 
-/** A berth a boot displaced, with the life it had. */
-interface DisplacedLife {
+/**
+ * A berth a boot displaced, with the life it had.
+ *
+ * @example
+ * const displaced: DisplacedLife | null = registry.displaced_get(key);
+ */
+export interface DisplacedLife {
   /** The berth. */
   berth: Berth;
   /** Its life. */
@@ -108,6 +113,9 @@ export class SessionRegistry {
    * @param user - The person.
    * @param berth - The berth it answers at.
    * @returns The entry.
+   *
+   * @example
+   * const entry: SessionEntry = registry.note(identity, user, berth);
    */
   public note(identity: string, user: string, berth: Berth): SessionEntry {
     const key: string = this.key_derive(identity);
@@ -183,6 +191,19 @@ export class SessionRegistry {
    */
   public life_get(key: string): number | null {
     return this.byKey.get(key)?.life ?? this.pending.get(key)?.life ?? null;
+  }
+
+  /**
+   * The berth a key's pending boot displaced, and the life it had: a restart's boot names the berth it is to stop.
+   *
+   * @param key - The session key.
+   * @returns The displaced berth and its life, or null when no boot is pending or it displaced none.
+   *
+   * @example
+   * const displaced: DisplacedLife | null = registry.displaced_get(key);
+   */
+  public displaced_get(key: string): DisplacedLife | null {
+    return this.pending.get(key)?.replaces ?? null;
   }
 
   /** The identity behind a key, admitted or still booting. */

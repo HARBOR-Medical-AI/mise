@@ -159,6 +159,43 @@ function grantRecord_read(value: unknown): DoorGrant | null {
 }
 
 /**
+ * What a request that ends a grant was told: what its turn decided, and the write's failure when the end is not yet
+ * on disk (the grant is refused in this door meanwhile).
+ *
+ * @example
+ * ```ts
+ * const revoked: GrantRevocation = { outcome: 'ended', unwritten: null };
+ * ```
+ */
+export interface GrantRevocation extends RevokeDecision {
+  /** Why the end is not on disk yet; null when it is. */
+  unwritten: Error | null;
+}
+
+/**
+ * What a request's turn decided of a grant's end.
+ *
+ * @example
+ * ```ts
+ * const decision: RevokeDecision = { outcome: 'ended', decided: true };
+ * ```
+ */
+export interface RevokeDecision {
+  /** `ended` when the grant is ended (by this request or one before it), `moved` when a switch had moved it, `gone` when the door held no such grant. */
+  outcome: 'ended' | 'moved' | 'gone';
+  /** Whether this request is the one that ended it: exactly one request is. */
+  decided: boolean;
+}
+
+/** A change's answer, and its write's failure if it failed. */
+interface ChangeTried<T> {
+  /** What the change decided. */
+  answer: T;
+  /** The write's failure, or null. */
+  unwritten: Error | null;
+}
+
+/**
  * The door's grants and the connections each one holds. The door is the
  * only writer of the file.
  *
@@ -172,6 +209,8 @@ export class GrantStore {
   private grants: Map<string, DoorGrant> = new Map();
   /** Grants a logout or an hour ended that the file may still hold: let in by none, until the file says so too. */
   private readonly denied: Set<string> = new Set();
+  /** Grants whose end a request has been told it decided; kept until a write carries the end. */
+  private readonly endsDecided: Set<string> = new Set();
   /** The change under way: changes are made one after another, each on the grants as the last left them. */
   private changing: Promise<unknown> = Promise.resolve();
   private readonly connections: Map<string, Set<GrantConnection>> = new Map();
@@ -279,15 +318,45 @@ export class GrantStore {
    * ```
    */
   public async grant_end(id: string): Promise<'ended' | 'moved' | 'gone'> {
+    const revoked: GrantRevocation = await this.grant_revoke(id);
+    if (revoked.unwritten !== null) throw revoked.unwritten;
+    return revoked.outcome;
+  }
+
+  /**
+   * Ends a grant as `grant_end` does, and answers what its turn decided even
+   * when the write that follows fails: of all the requests that end a grant,
+   * or move it, exactly one is told it decided that (`decided`, or a switch's
+   * move), and a write that fails does not hand that to another.
+   *
+   * @param id - The grant's id.
+   * @returns What this request's turn decided, and the write's failure if it failed.
+   *
+   * @example
+   * ```ts
+   * const revoked: GrantRevocation = await grants.grant_revoke(held.id);
+   * if (revoked.decided) berth_stop();
+   * ```
+   */
+  public async grant_revoke(id: string): Promise<GrantRevocation> {
     const known: boolean = this.grants.has(id);
     if (known) this.denied.add(id);
     this.connections_close(id);
-    return this.change_apply((next: Map<string, DoorGrant>): 'ended' | 'moved' | 'gone' => {
-      if (next.delete(id)) return 'ended';
-      if ([...next.values()].some((grant: DoorGrant): boolean => grant.movedFrom === id)) return 'moved';
-      // Refused at this logout's asking, and written away by a change that came between: this logout ended it.
-      return known ? 'ended' : 'gone';
+    const tried: ChangeTried<RevokeDecision> = await this.change_try((next: Map<string, DoorGrant>): RevokeDecision => {
+      // An end already decided by an earlier request (whose write may have failed): ended, and not by this one.
+      if (this.endsDecided.has(id)) {
+        next.delete(id);
+        return { outcome: 'ended', decided: false };
+      }
+      if ([...next.values()].some((grant: DoorGrant): boolean => grant.movedFrom === id)) return { outcome: 'moved', decided: false };
+      // Standing, or refused at this logout's asking and written away by a change that came between: this one ends it.
+      if (next.delete(id) || known) {
+        this.endsDecided.add(id);
+        return { outcome: 'ended', decided: true };
+      }
+      return { outcome: 'gone', decided: false };
     });
+    return { ...tried.answer, unwritten: tried.unwritten };
   }
 
   /**
@@ -452,19 +521,37 @@ export class GrantStore {
    * @returns The change's answer, once written.
    * @throws {Error} When the file cannot be written, or would be larger than the door reads back.
    */
-  private change_apply<T>(change: (next: Map<string, DoorGrant>) => T): Promise<T> {
-    const turn_run = async (): Promise<T> => {
+  private async change_apply<T>(change: (next: Map<string, DoorGrant>) => T): Promise<T> {
+    const tried: ChangeTried<T> = await this.change_try(change);
+    if (tried.unwritten !== null) throw tried.unwritten;
+    return tried.answer;
+  }
+
+  /**
+   * One change in its turn, as `change_apply`, answering what the change decided whether or not its write went
+   * through.
+   *
+   * @param change - What the change does with the copy.
+   * @returns The change's answer, and the write's failure if it failed.
+   */
+  private change_try<T>(change: (next: Map<string, DoorGrant>) => T): Promise<ChangeTried<T>> {
+    const turn_run = async (): Promise<ChangeTried<T>> => {
       const next: Map<string, DoorGrant> = new Map([...this.grants].filter(([, grant]: [string, DoorGrant]): boolean => Date.parse(grant.expires) > this.now()));
       const answer: T = change(next);
       // Whatever the change, a grant refused here is not written as standing.
       for (const id of this.denied) next.delete(id);
-      await this.file_write(next);
+      try {
+        await this.file_write(next);
+      } catch (error: unknown) {
+        return { answer, unwritten: error instanceof Error ? error : new Error(String(error)) };
+      }
       this.grants = next;
       for (const id of [...this.denied]) if (!next.has(id)) this.denied.delete(id);
-      return answer;
+      for (const id of [...this.endsDecided]) if (!next.has(id)) this.endsDecided.delete(id);
+      return { answer, unwritten: null };
     };
-    const run: Promise<T> = this.changing.then(turn_run, turn_run);
-    this.changing = run.catch((): void => undefined);
+    const run: Promise<ChangeTried<T>> = this.changing.then(turn_run, turn_run);
+    this.changing = run.then((): void => undefined, (): void => undefined);
     return run;
   }
 
