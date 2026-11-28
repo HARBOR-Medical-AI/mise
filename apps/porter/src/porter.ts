@@ -12,7 +12,7 @@ import { CredentialStore } from './creds.js';
 import { sessionEnv_withheld } from './host/sessionEnv.js';
 import { doorOrigins_resolve, type DoorOrigins } from './origin.js';
 import { porterConfig_resolve, porterStateDir_resolve, porterTokensFile_resolve, chellEntry_locate, stratusEntry_locate, PORTER_DEFAULT_TOKEN_DAYS, type PorterConfig } from './config.js';
-import { TokenStore, type DoorToken } from './tokens.js';
+import { TokenStore, type DoorToken, type MintedToken } from './tokens.js';
 import { identity_normalise } from '@fnndsc/calypso/berth';
 import { ProcessHost } from './host/processHost.js';
 import { LauncherHost } from './host/launcherHost.js';
@@ -100,10 +100,10 @@ async function session_end(stateDir: string, who: string): Promise<void> {
  *
  * @param file - The token store.
  */
-function tokens_print(file: string): void {
+async function tokens_print(file: string): Promise<void> {
   const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS);
-  store.load();
-  const tokens: DoorToken[] = store.list();
+  await store.load();
+  const tokens: DoorToken[] = await store.list();
   console.log(`tokens: ${file}`);
   if (tokens.length === 0) {
     console.log('no door tokens');
@@ -126,10 +126,10 @@ function tokens_print(file: string): void {
  * @param user - The CUBE username.
  * @param name - The token's name, or undefined for all of the user's.
  */
-function token_revoke(file: string, user: string, name: string | undefined): void {
+async function token_revoke(file: string, user: string, name: string | undefined): Promise<void> {
   const store: TokenStore = new TokenStore(file, PORTER_DEFAULT_TOKEN_DAYS);
-  store.load();
-  const gone: number = store.revoke(user, name);
+  await store.load();
+  const gone: number = await store.revoke(user, name);
   if (gone === 0) {
     console.error(`[!] no door token ${name === undefined ? `for ${user}` : `named "${name}" for ${user}`}; 'porter --tokens' lists them`);
     process.exit(1);
@@ -146,7 +146,7 @@ function token_revoke(file: string, user: string, name: string | undefined): voi
  * @param user - The CUBE username.
  * @param name - The token's name.
  */
-function token_mint(env: NodeJS.ProcessEnv, user: string, name: string): void {
+async function token_mint(env: NodeJS.ProcessEnv, user: string, name: string): Promise<void> {
   const cubeUrl: string | undefined = env['PORTER_CUBE_URL'];
   if (cubeUrl === undefined || cubeUrl.length === 0) {
     console.error('[!] --mint needs PORTER_CUBE_URL: the token is for an identity at one CUBE');
@@ -159,8 +159,8 @@ function token_mint(env: NodeJS.ProcessEnv, user: string, name: string): void {
     process.exit(1);
   }
   const store: TokenStore = new TokenStore(porterTokensFile_resolve(env), days);
-  store.load();
-  const made: { token: string; record: DoorToken } = store.mint(identity_normalise(user, cubeUrl.endsWith('/') ? cubeUrl : `${cubeUrl}/`), user, name);
+  await store.load();
+  const made: MintedToken = await store.mint(identity_normalise(user, cubeUrl.endsWith('/') ? cubeUrl : `${cubeUrl}/`), user, name);
   console.log(`minted a door token "${name}" for ${user}; it dies ${made.record.expires.slice(0, 10)} and is shown once:`);
   console.log(made.token);
   console.log('hand it over out of band; the script keeps it in ~/.config/chell/doors/<door-host>.json (0600) or CHELL_DOOR_TOKEN');
@@ -279,9 +279,9 @@ async function porter_start(): Promise<void> {
   if (ask.mode === 'version') { console.log(versionReport_build()); return; }
   if (ask.mode === 'status') { await status_print(porterStateDir_resolve(process.env)); return; }
   if (ask.mode === 'end') { await session_end(porterStateDir_resolve(process.env), ask.who); return; }
-  if (ask.mode === 'tokens') { tokens_print(porterTokensFile_resolve(process.env)); return; }
-  if (ask.mode === 'revoke') { token_revoke(porterTokensFile_resolve(process.env), ask.user, ask.name); return; }
-  if (ask.mode === 'mint') { token_mint(process.env, ask.user, ask.name); return; }
+  if (ask.mode === 'tokens') { await tokens_print(porterTokensFile_resolve(process.env)); return; }
+  if (ask.mode === 'revoke') { await token_revoke(porterTokensFile_resolve(process.env), ask.user, ask.name); return; }
+  if (ask.mode === 'mint') { await token_mint(process.env, ask.user, ask.name); return; }
   if (ask.mode === 'creds') { creds_import(process.env, ask.user, ask.config, ask.profile); return; }
   let config: PorterConfig;
   try {

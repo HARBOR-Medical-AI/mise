@@ -78,7 +78,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DOOR_COOKIE, doorCookie_options } from './door.js';
 import { loginPage_render, greetPage_render, authorisedPage_render } from './greeter.js';
-import { DeviceCodes, TokenStore, token_looksLike, type DeviceGrant, type DoorToken, type TokenCheck } from './tokens.js';
+import { DeviceCodes, TokenStore, token_looksLike, type DeviceGrant, type DoorToken, type MintedToken, type TokenCheck } from './tokens.js';
 import { idleSweep_run } from './sweep.js';
 import { AttemptLimit, HitLimit, VerdictCache, type Admission, type Attempt } from './limit.js';
 import { doorOrigins_resolve, method_isSafe, origin_isDoors, originRefusal_say, type DoorOrigins } from './origin.js';
@@ -333,7 +333,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   };
   const creds: CredentialStore = new CredentialStore(config.stateDir);
   const tokens: TokenStore = options.tokens ?? new TokenStore(config.tokensFile, config.tokenDays);
-  tokens.load();
+  await tokens.load();
   if (tokens.legacyNote !== null) options.log?.(tokens.legacyNote);
   if (tokens.skipped.length > 0) options.log?.(`the door's token store holds ${String(tokens.skipped.length)} record(s) of the wrong shape, left out: ${tokens.skipped.join(', ')}`);
   const codes: DeviceCodes = options.codes ?? new DeviceCodes();
@@ -481,7 +481,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       await reply.code(401).send({ error: 'a door token is required (Authorization: Bearer …)' });
       return null;
     }
-    const checked: TokenCheck = tokens.check(bearer);
+    const checked: TokenCheck = await tokens.check(bearer);
     // A token minted for another CUBE's identity is not this door's to answer for.
     if (checked.ok && identity_normalise(checked.record.user, config.cubeUrl) !== checked.record.identity) {
       await reply.code(401).send({ error: `the door token "${checked.record.name}" was minted for another CUBE than this door's` });
@@ -500,7 +500,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     if (holder === null) return reply;
     return {
       user: holder.user,
-      tokens: tokens.list().filter((token: DoorToken): boolean => token.identity === holder.identity).map((token: DoorToken) => ({ name: token.name, created: token.created, expires: token.expires, lastUsed: token.lastUsed })),
+      tokens: (await tokens.list()).filter((token: DoorToken): boolean => token.identity === holder.identity).map((token: DoorToken) => ({ name: token.name, created: token.created, expires: token.expires, lastUsed: token.lastUsed })),
     };
   });
 
@@ -509,7 +509,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     const holder: DoorToken | null = await bearer_check(request, reply);
     if (holder === null) return reply;
     // The token in hand and only it, found again by its hash in the same change: a replacement of the same name stays.
-    const gone: DoorToken | null = tokens.revoke_presented(bearer_extract(request) ?? '');
+    const gone: DoorToken | null = await tokens.revoke_presented(bearer_extract(request) ?? '');
     if (gone === null) return reply.code(401).send({ error: 'the door does not know that token (revoked, or minted elsewhere)' });
     options.log?.(`${gone.user} revoked their door token "${gone.name}"`);
     return { revoked: true, name: gone.name };
@@ -540,7 +540,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     if (bearer !== null) {
       if (!token_looksLike(bearer)) return refuse(401, 'that is not a door token');
       // One change of the store, read afresh: found by its hash, alive, for the identity this door serves, its use noted.
-      const checked: TokenCheck = tokens.login_authorize(bearer, (user: string): string => identity_normalise(user, config.cubeUrl));
+      const checked: TokenCheck = await tokens.login_authorize(bearer, (user: string): string => identity_normalise(user, config.cubeUrl));
       if (!checked.ok) {
         if (checked.why === 'expired') {
           options.log?.(`refused ${checked.record.user}'s door token "${checked.record.name}": it expired on ${checked.record.expires.slice(0, 10)}`);
@@ -619,7 +619,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       const forHost: string | null = codes.host_find(wanted.code);
       if (forHost === null) return refuse(410, `the code ${wanted.code} is not waiting (ten minutes, once); run chell auth login again`);
       const name: string = `${username}@${forHost}`;
-      const made: { token: string; record: DoorToken } = tokens.mint(identity, username, name);
+      const made: MintedToken = await tokens.mint(identity, username, name);
       const grant: DeviceGrant = { token: made.token, user: username, name, expires: made.record.expires };
       codes.authorise(wanted.code, grant);
       options.log?.(`minted a door token "${name}" for ${username} by device code (dies ${made.record.expires.slice(0, 10)})`);
@@ -644,7 +644,7 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     // A password login asking for a token beside its session.
     let granted: { token: string; name: string; expires: string } | null = null;
     if (wanted.tokenName !== undefined) {
-      const made: { token: string; record: DoorToken } = tokens.mint(identity, username, wanted.tokenName);
+      const made: MintedToken = await tokens.mint(identity, username, wanted.tokenName);
       granted = { token: made.token, name: wanted.tokenName, expires: made.record.expires };
       options.log?.(`minted a door token "${wanted.tokenName}" for ${username} (dies ${made.record.expires.slice(0, 10)})`);
     }

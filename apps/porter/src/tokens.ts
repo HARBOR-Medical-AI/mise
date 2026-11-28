@@ -17,12 +17,14 @@
  * The store is a folder of versions in the porter's own state, each a JSON
  * file at mode 0600 published whole by an exclusive link, so the door and
  * the operator's CLI never lose each other's changes; the plaintext is
- * never in it. A token's last use is sampled at most once an hour.
+ * never in it. Its I/O is asynchronous, off the door's event loop. A
+ * token's last use is sampled at most once an hour.
  *
  * @module
  */
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync, type Stats } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
+import { link, lstat, mkdir, open, readdir, rename, rm, stat, writeFile, type FileHandle, type FileReadResult } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** What the plaintext starts with, so a token is recognisable in a log or a leak. */
@@ -96,6 +98,21 @@ export interface TokenUnknown {
   why: 'unknown';
 }
 
+/**
+ * A token just minted: its plaintext, shown once, and the record kept.
+ *
+ * @example
+ * ```ts
+ * const { token, record }: MintedToken = await store.mint(identity, user, 'laptop');
+ * ```
+ */
+export interface MintedToken {
+  /** The plaintext, shown once and never kept. */
+  token: string;
+  /** The record the store keeps. */
+  record: DoorToken;
+}
+
 /** What the store answers for a presented token. */
 export type TokenCheck = TokenAdmitted | TokenRefused | TokenUnknown;
 
@@ -139,14 +156,14 @@ const VERSIONS_KEPT: number = 8;
 /** How often a change that lost its race is tried again on the newer store before it refuses. */
 const PUBLISH_TRIES: number = 64;
 
-/** How long a temporary version a writer left behind is kept before it is swept, in ms. */
+/** How long a temporary file a writer left behind is kept before it is swept, in ms. */
 const TEMP_LIFE_MS: number = 3_600_000;
+
+/** The names the store gives its temporary files, and the only names its sweep removes. */
+const TEMP_NAME: RegExp = /^(?:[1-9][0-9]{0,11}|empty)\.[0-9]{1,10}\.[0-9a-f]{12}$/;
 
 /** How seldom a token's last use is written down: at most once an hour. */
 export const LAST_USED_SAMPLE_MS: number = 3_600_000;
-
-/** A time as the store writes it: `toISOString()`'s form, and no other. */
-const ISO_TIME: RegExp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 /** One version of the store as read: its number and its records. */
 interface StoreVersion {
@@ -173,7 +190,7 @@ interface ChangeOutcome<T> {
 /** What a change to the store does with what it read. */
 type StoreChange<T> = (tokens: DoorToken[]) => ChangeOutcome<T>;
 
-/** Records as read, with how many of the wrong shape were left out. */
+/** Records as read, with those of the wrong shape left out. */
 interface RecordsRead {
   /** The records kept. */
   tokens: DoorToken[];
@@ -183,28 +200,40 @@ interface RecordsRead {
   migratedFrom?: string;
 }
 
+/** A folder of the store, held open: reached through its handle, whatever stands at its name since. */
+interface HeldFolder {
+  /** The open folder. */
+  handle: FileHandle;
+  /** The path that leads to the open folder itself (`/proc/self/fd/<fd>`). */
+  at: string;
+}
+
 /**
  * Where in a transaction a test may step in, to stand for another writer.
  *
  * @example
  * ```ts
- * new TokenStore(path, 30, undefined, { read_after: () => { other.mint(identity, user, 'n'); } });
+ * new TokenStore(path, 30, undefined, { read_after: async () => { await other.mint(identity, user, 'n'); } });
  * ```
  */
 export interface StoreHooks {
   /** After the current version is read, before the next is published. */
-  read_after?: () => void;
+  read_after?: () => void | Promise<void>;
   /** After the next version is published. */
-  publish_after?: () => void;
+  publish_after?: () => void | Promise<void>;
   /** After a reader found no version, before it reads the legacy file. */
-  legacy_before?: () => void;
+  legacy_before?: () => void | Promise<void>;
+  /** While a read holds the store, for a test that holds it there. */
+  read_during?: () => void | Promise<void>;
 }
 
 /**
- * Whether a field is an ISO time.
+ * Whether a field is a time as the store writes it: exactly what
+ * `toISOString()` makes of the time it names (so no February 30th, and the
+ * extended years it writes are read back).
  *
  * @param value - The field.
- * @returns True for a string that parses as a time.
+ * @returns True for such a time.
  *
  * @example
  * ```ts
@@ -212,13 +241,19 @@ export interface StoreHooks {
  * ```
  */
 function time_isIso(value: unknown): value is string {
-  return typeof value === 'string' && ISO_TIME.test(value) && !Number.isNaN(Date.parse(value));
+  if (typeof value !== 'string') return false;
+  const at: number = Date.parse(value);
+  return !Number.isNaN(at) && new Date(at).toISOString() === value;
 }
 
+/** What a token's name, an identity and a username may be: a short line with no control characters. */
+const TOKEN_TEXT: RegExp = /^[^\u0000-\u001f\u007f]{1,200}$/u;
+
 /**
- * Reads one record of the store as a token, or says it is not one.
+ * Reads one record of the store as a token, or says it is not one. The one
+ * rule for both sides: a record is published only if it reads back.
  *
- * @param value - The record as parsed.
+ * @param value - The record as parsed, or as about to be published.
  * @returns The token, or null for a record of the wrong shape.
  *
  * @example
@@ -230,8 +265,8 @@ export function tokenRecord_read(value: unknown): DoorToken | null {
   if (value === null || typeof value !== 'object') return null;
   const held: Record<string, unknown> = value as Record<string, unknown>;
   const { name, identity, user, hash, created, expires, lastUsed } = held;
-  if (typeof name !== 'string' || name.length === 0 || typeof identity !== 'string' || identity.length === 0) return null;
-  if (typeof user !== 'string' || user.length === 0 || typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) return null;
+  if (typeof name !== 'string' || !TOKEN_TEXT.test(name) || typeof identity !== 'string' || !TOKEN_TEXT.test(identity)) return null;
+  if (typeof user !== 'string' || !TOKEN_TEXT.test(user) || typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) return null;
   if (!time_isIso(created) || !time_isIso(expires) || (lastUsed !== null && !time_isIso(lastUsed))) return null;
   return { name, identity, user, hash, created, expires, lastUsed };
 }
@@ -240,32 +275,34 @@ export function tokenRecord_read(value: unknown): DoorToken | null {
  * The door's token store: minted, checked, revoked, listed, persisted.
  *
  * The store is a folder of versions beside the file it is named by
- * (`<file>.d/`): each change writes the next version whole and publishes
- * it with an exclusive link, so a version exists whole or not at all, and
- * two writers (the door and the operator's CLI) can never both publish
- * the same version. The link is the commit: a writer that loses (the name
- * is taken) reads the newer version and applies its change again. A
- * version's name is never freed: old versions are emptied, not removed, so
- * a writer that read long ago can only lose. Every question reads the
- * current version afresh; nothing is answered from a copy in memory.
+ * (`<file>.d/`, versions filed in folders of a thousand): each change
+ * writes the next version whole and publishes it with an exclusive link,
+ * so a version exists whole or not at all, and two writers (the door and
+ * the operator's CLI) can never both publish the same version. The link is
+ * the commit: a writer that loses (the name is taken) reads the newer
+ * version and applies its change again. A version's name is never freed:
+ * old versions are emptied, not removed. Every folder is opened without
+ * following a link and shown to be this account's own before anything in
+ * it is read or made, and is reached through that open handle afterwards.
+ * Every question reads the current version afresh, asynchronously, off the
+ * door's event loop.
  *
  * @example
  * ```ts
  * const store = new TokenStore('/var/lib/porter/tokens.json', 30);
- * store.load();
- * const { token } = store.mint('me@https://cube/api/v1/', 'me', 'laptop');
+ * await store.load();
+ * const { token } = await store.mint('me@https://cube/api/v1/', 'me', 'laptop');
  * ```
  */
 export class TokenStore {
   /** The records the store held of the wrong shape when it was opened, left out: by position and, where safe, by name. */
   public skipped: string[] = [];
-  /** Said once at start when the one-file store changed after it was migrated: it is left as it is, not archived. */
+  /** Said once at start about the one-file store from before, when there is something to say. */
   public legacyNote: string | null = null;
   private readonly versions: string;
-  private readonly temps: string;
 
   /**
-   * @param path - The store's file: the versions live in `<path>.d/` (0700), and a legacy file at the path is migrated.
+   * @param path - The store's file: the versions live in `<path>.d/` (0700); a one-file store at the path is migrated, and left as it is.
    * @param days - How long a minted token lives.
    * @param now - The clock, replaceable in tests.
    * @param hooks - Where a test stands in for another writer.
@@ -277,53 +314,32 @@ export class TokenStore {
     private readonly hooks: StoreHooks = {},
   ) {
     this.versions = `${path}.d`;
-    this.temps = join(this.versions, 'tmp');
   }
 
   /**
-   * Opens the store: migrates a legacy file into the first version when
+   * Opens the store: migrates a one-file store into the first version when
    * there is none, and reads the current one, so a store that does not
    * parse is refused loudly at start. Safe to repeat, and safe at once from
-   * two processes.
+   * two processes. The one-file store is never moved or changed: once a
+   * version holds it, it is only a copy from before.
    *
-   * @throws {Error} When the current version, or the legacy file, is not a token file.
+   * @throws {Error} When the current version, or a one-file store still to be migrated, cannot be read or is not a token file.
    */
-  public load(): void {
-    mkdirSync(this.temps, { recursive: true, mode: 0o700 });
-    this.temps_sweep();
-    const current: StoreVersion = this.current_read();
-    // What was left out of the store as found, said once at start: a migrated version holds only what was kept.
-    this.skipped = current.skipped;
-    if (current.legacy) {
-      // The legacy file is the truth until a whole version holds its records; another opener may publish it first.
-      this.hooks.read_after?.();
-      const temp: string | false = this.version_publish(1, current.tokens, current.migratedFrom);
-      if (temp !== false) this.maintenance_run(1, temp);
-    }
-    this.legacy_archive();
-  }
-
-  /**
-   * Archives the one-file store once a version holds it: only if it is
-   * still the file the store was migrated from. One changed since (an older
-   * porter wrote it) is left as it is, and said.
-   *
-   * @throws {Error} When the file cannot be read or renamed for another reason than its being gone.
-   */
-  private legacy_archive(): void {
-    if (this.highest_find() === 0) return;
-    const bytes: Buffer | null = ownFile_read(this.path, VERSION_MAX_BYTES);
-    if (bytes === null) return;
-    const from: string | undefined = this.current_read().migratedFrom;
-    if (from !== bytes_hash(bytes)) {
-      this.legacyNote = `the one-file token store at ${this.path} changed after it was migrated (an older porter wrote it); it is left as it is, and the versions in ${this.versions} are the store`;
-      return;
-    }
-    try {
-      renameSync(this.path, `${this.path}.migrated`);
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
+  public async load(): Promise<void> {
+    await this.held_run(async (root: HeldFolder): Promise<void> => {
+      await this.temps_sweep(root);
+      const current: StoreVersion = await this.current_read(root);
+      // What was left out of the store as found, said once at start: a migrated version holds only what was kept.
+      this.skipped = current.skipped;
+      if (current.legacy) {
+        // The one-file store is the truth until a whole version holds its records; another opener may publish it first.
+        await this.hooks.read_after?.();
+        const temp: string | false = await this.version_publish(root, 1, current.tokens, current.migratedFrom);
+        if (temp !== false) await this.maintenance_run(root, 1, temp);
+      }
+      const now: StoreVersion = current.legacy ? await this.current_read(root) : current;
+      if (now.n > 0) await this.legacy_compare(now.migratedFrom);
+    });
   }
 
   /**
@@ -335,8 +351,9 @@ export class TokenStore {
    * @param user - The CUBE username.
    * @param name - The operator-readable name.
    * @returns The plaintext, shown once, and the record kept.
+   * @throws {Error} When the record would not read back (an empty name, a control character), before anything is published.
    */
-  public mint(identity: string, user: string, name: string): { token: string; record: DoorToken } {
+  public async mint(identity: string, user: string, name: string): Promise<MintedToken> {
     const token: string = token_make();
     const created: Date = this.now();
     const record: DoorToken = {
@@ -348,7 +365,9 @@ export class TokenStore {
       expires: new Date(created.getTime() + this.days * 24 * 3600 * 1000).toISOString(),
       lastUsed: null,
     };
-    this.change_apply((tokens: DoorToken[]) => ({
+    // The rule a reader holds a record to, held before it is published: a mint never succeeds for a token the next read drops.
+    if (tokenRecord_read(record) === null) throw new Error(`a door token needs a name, a user and an identity of one short line each; "${name.slice(0, 40)}" is not one`);
+    await this.change_apply((tokens: DoorToken[]) => ({
       result: undefined,
       next: [...tokens.filter((held: DoorToken): boolean => !(held.identity === identity && held.name === name)), record],
     }));
@@ -362,8 +381,8 @@ export class TokenStore {
    * @param plain - The token as presented.
    * @returns The record when it lets someone in.
    */
-  public check(plain: string): TokenCheck {
-    return token_find(this.current_read().tokens, plain, this.now());
+  public async check(plain: string): Promise<TokenCheck> {
+    return token_find((await this.current_get()).tokens, plain, this.now());
   }
 
   /**
@@ -378,10 +397,10 @@ export class TokenStore {
    *
    * @example
    * ```ts
-   * store.login_authorize(bearer, (user) => identity_normalise(user, cubeUrl));
+   * await store.login_authorize(bearer, (user) => identity_normalise(user, cubeUrl));
    * ```
    */
-  public login_authorize(plain: string, identityAt: (user: string) => string): TokenCheck {
+  public async login_authorize(plain: string, identityAt: (user: string) => string): Promise<TokenCheck> {
     return this.change_apply<TokenCheck>((tokens: DoorToken[]) => {
       const found: TokenCheck = token_find(tokens, plain, this.now());
       if (!found.ok) return { result: found };
@@ -401,7 +420,7 @@ export class TokenStore {
    * @param name - The token's name, or undefined for every one of the user's.
    * @returns How many went.
    */
-  public revoke(user: string, name?: string): number {
+  public async revoke(user: string, name?: string): Promise<number> {
     return this.change_apply((tokens: DoorToken[]) => {
       const next: DoorToken[] = tokens.filter((held: DoorToken): boolean => !(held.user === user && (name === undefined || held.name === name)));
       return next.length === tokens.length ? { result: 0 } : { result: tokens.length - next.length, next };
@@ -418,10 +437,10 @@ export class TokenStore {
    *
    * @example
    * ```ts
-   * store.revoke_presented(bearer)?.name; // 'laptop'
+   * (await store.revoke_presented(bearer))?.name; // 'laptop'
    * ```
    */
-  public revoke_presented(plain: string): DoorToken | null {
+  public async revoke_presented(plain: string): Promise<DoorToken | null> {
     const hash: string = token_hash(plain);
     return this.change_apply<DoorToken | null>((tokens: DoorToken[]) => {
       // Every record of that token goes, a copy left by a tampered store included.
@@ -437,11 +456,24 @@ export class TokenStore {
    *
    * @example
    * ```ts
-   * store.list().map((token) => token.name);
+   * (await store.list()).map((token) => token.name);
    * ```
    */
-  public list(): DoorToken[] {
-    return this.current_read().tokens;
+  public async list(): Promise<DoorToken[]> {
+    return (await this.current_get()).tokens;
+  }
+
+  /**
+   * The current version, read under the store's root held open.
+   *
+   * @returns The current version.
+   */
+  private async current_get(): Promise<StoreVersion> {
+    return this.held_run(async (root: HeldFolder): Promise<StoreVersion> => {
+      const current: StoreVersion = await this.current_read(root);
+      await this.hooks.read_during?.();
+      return current;
+    });
   }
 
   /**
@@ -454,68 +486,113 @@ export class TokenStore {
    * @returns The change's answer, once its version is published (or when it changes nothing); upkeep after the publication never turns it into a failure.
    * @throws {Error} When publishing fails other than by a lost race, or the store keeps changing past the bound.
    */
-  private change_apply<T>(change: StoreChange<T>): T {
-    for (let attempt: number = 0; attempt < PUBLISH_TRIES; attempt++) {
-      const current: StoreVersion = this.current_read();
-      const out: ChangeOutcome<T> = change(current.tokens.map((held: DoorToken): DoorToken => ({ ...held })));
-      if (out.next === undefined) return out.result;
-      this.hooks.read_after?.();
-      const temp: string | false = this.version_publish(current.n + 1, out.next, current.migratedFrom);
-      if (temp !== false) {
-        // Committed: whatever the upkeep after it does, the caller is given what the change did.
-        this.hooks.publish_after?.();
-        this.maintenance_run(current.n + 1, temp);
-        return out.result;
+  private async change_apply<T>(change: StoreChange<T>): Promise<T> {
+    return this.held_run(async (root: HeldFolder): Promise<T> => {
+      for (let attempt: number = 0; attempt < PUBLISH_TRIES; attempt++) {
+        const current: StoreVersion = await this.current_read(root);
+        const out: ChangeOutcome<T> = change(current.tokens.map((held: DoorToken): DoorToken => ({ ...held })));
+        if (out.next === undefined) return out.result;
+        await this.hooks.read_after?.();
+        const temp: string | false = await this.version_publish(root, current.n + 1, out.next, current.migratedFrom);
+        if (temp !== false) {
+          // Committed: whatever the upkeep after it does, the caller is given what the change did.
+          await this.hooks.publish_after?.();
+          await this.maintenance_run(root, current.n + 1, temp);
+          return out.result;
+        }
       }
-    }
-    throw new Error(`the door's token store at ${this.path} kept changing under this change; try again`);
+      throw new Error(`the door's token store at ${this.path} kept changing under this change; try again`);
+    });
   }
 
   /**
-   * Publishes a version: written whole to a fresh file, then linked to its
-   * name, which fails if the name is taken.
+   * Runs a step with the store's root folder held open and shown to be this
+   * account's own, made first when there is none.
    *
+   * @param step - What to do in it.
+   * @returns What the step answers.
+   * @throws {Error} When the root is not this account's own folder, or the host gives no path to an open folder.
+   */
+  private async held_run<T>(step: (root: HeldFolder) => Promise<T>): Promise<T> {
+    await mkdir(this.versions, { recursive: true, mode: 0o700 });
+    const root: HeldFolder = await folder_hold(this.versions);
+    try {
+      return await step(root);
+    } finally {
+      await root.handle.close();
+    }
+  }
+
+  /**
+   * Publishes a version: written whole to a fresh file in the store's own
+   * temporary folder, then linked to its name in its folder of versions,
+   * which fails if the name is taken. Both folders are reached through
+   * their open handles.
+   *
+   * @param root - The store's root, held.
    * @param n - The version's number.
    * @param tokens - Its records.
    * @param migratedFrom - The one-file store the store was migrated from, carried on.
    * @returns The temporary file it was published from, for the upkeep to remove; false when another writer holds that version.
-   * @throws {Error} When the version would be larger than a store, or cannot be written or linked other than by a taken name.
+   * @throws {Error} When the version would be larger than a store, a record would not read back, or it cannot be written or linked other than by a taken name.
    */
-  private version_publish(n: number, tokens: DoorToken[], migratedFrom: string | undefined): string | false {
+  private async version_publish(root: HeldFolder, n: number, tokens: DoorToken[], migratedFrom: string | undefined): Promise<string | false> {
     if (n > VERSION_LAST) throw new Error(`the door's token store at ${this.path} has run out of version numbers`);
+    if (tokens.some((record: DoorToken): boolean => tokenRecord_read(record) === null)) throw new Error(`the door's token store at ${this.path} would hold a record no reader accepts; the change is refused`);
     const body: TokenFile = { schemaVersion: 1, tokens, ...(migratedFrom === undefined ? {} : { migratedFrom }) };
     const text: string = `${JSON.stringify(body, null, 2)}\n`;
     // The rule the reader holds a version to, held before it is published: nothing is published that would be refused.
     if (Buffer.byteLength(text, 'utf8') > VERSION_MAX_BYTES) throw new Error(`the door's token store at ${this.path} would grow past ${String(VERSION_MAX_BYTES)} bytes; the change is refused`);
-    const temp: string = join(this.temps, `${String(n)}.${String(process.pid)}.${randomBytes(6).toString('hex')}`);
-    writeFileSync(temp, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    const temps: HeldFolder = await folder_hold(join(root.at, 'tmp'), true);
+    const folder: HeldFolder = await folder_hold(join(root.at, folder_name(n)), true);
     try {
-      mkdirSync(this.folder_path(n), { recursive: true, mode: 0o700 });
-      linkSync(temp, this.version_path(n));
-      return temp;
-    } catch (error: unknown) {
-      rmSync(temp, { force: true });
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-      throw error;
+      const name: string = `${String(n)}.${String(process.pid)}.${randomBytes(6).toString('hex')}`;
+      const temp: string = join(temps.at, name);
+      const file: FileHandle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        await file.writeFile(text, 'utf8');
+      } finally {
+        await file.close();
+      }
+      try {
+        await link(temp, join(folder.at, `${String(n)}.json`));
+        return name;
+      } catch (error: unknown) {
+        await rm(temp, { force: true });
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw error;
+      }
+    } finally {
+      await temps.handle.close();
+      await folder.handle.close();
     }
   }
 
   /**
    * The upkeep after a publication: its temporary file removed, and the
-   * version that just fell out of the kept window emptied. Each step is its own: a failure is no failure
-   * of the change already committed, and leaves only something to do again.
+   * version that just fell out of the kept window emptied. Each step is its
+   * own: a failure is no failure of the change already committed, and
+   * leaves only something to do again.
    *
+   * @param root - The store's root, held.
    * @param published - The version just published.
-   * @param temp - Its temporary file.
+   * @param temp - Its temporary file's name.
    */
-  private maintenance_run(published: number, temp: string): void {
-    const steps: Array<() => void> = [
-      (): void => { rmSync(temp, { force: true }); },
-      (): void => { this.version_empty(published - VERSIONS_KEPT); },
+  private async maintenance_run(root: HeldFolder, published: number, temp: string): Promise<void> {
+    const steps: Array<() => Promise<void>> = [
+      async (): Promise<void> => {
+        const temps: HeldFolder = await folder_hold(join(root.at, 'tmp'));
+        try {
+          await rm(join(temps.at, temp), { force: true });
+        } finally {
+          await temps.handle.close();
+        }
+      },
+      async (): Promise<void> => { await this.version_empty(root, published - VERSIONS_KEPT); },
     ];
     for (const step_run of steps) {
       try {
-        step_run();
+        await step_run();
       } catch {
         // Upkeep only: the version is published whatever this step did.
       }
@@ -523,46 +600,39 @@ export class TokenStore {
   }
 
   /**
-   * The highest version's number, emptied or not, by listing the folders of
-   * versions and the highest of them: at most a thousand names, however
-   * long the store has lived. Only names a writer makes count: a number
-   * past the last, or one filed in the wrong folder, is not a version.
+   * The highest version's number, emptied or not, by listing the folders
+   * of versions and the highest of them that is a folder of this account's
+   * own: at most a thousand names, however long the store has lived. Only
+   * names a writer makes count: a number past the last, one filed in the
+   * wrong folder, a folder that is a link or a file, is no version.
    *
-   * @returns The number; 0 when there is none.
+   * @param root - The store's root, held.
+   * @returns The number, and its folder's handle-reached path; 0 when there is none.
    * @throws {Error} When a folder cannot be read.
    */
-  private highest_find(): number {
-    const folders: number[] = names_list(this.versions)
-      .map((name: string): number => (/^s(0|[1-9][0-9]{0,9})$/.test(name) ? Number(name.slice(1)) : -1))
+  private async highest_find(root: HeldFolder): Promise<number> {
+    const folders: number[] = (await readdir(root.at))
+      .map((name: string): number => (/^s(0|[1-9][0-9]{0,8})$/.test(name) ? Number(name.slice(1)) : -1))
       .filter((k: number): boolean => k >= 0 && k * VERSIONS_PER_FOLDER <= VERSION_LAST)
       .sort((a: number, b: number): number => b - a);
     for (const k of folders) {
-      const found: number[] = names_list(join(this.versions, `s${String(k)}`))
-        .map((name: string): number => (/^[1-9][0-9]{0,11}\.json$/.test(name) ? Number(name.slice(0, -5)) : 0))
-        .filter((n: number): boolean => n > 0 && n <= VERSION_LAST && Math.floor(n / VERSIONS_PER_FOLDER) === k);
-      if (found.length > 0) return Math.max(...found);
+      let folder: HeldFolder;
+      try {
+        folder = await folder_hold(join(root.at, `s${String(k)}`));
+      } catch {
+        // Not a folder of the store's own (a link, a file, another's): no versions are in it.
+        continue;
+      }
+      try {
+        const found: number[] = (await readdir(folder.at))
+          .map((name: string): number => (/^[1-9][0-9]{0,11}\.json$/.test(name) ? Number(name.slice(0, -5)) : 0))
+          .filter((n: number): boolean => n > 0 && n <= VERSION_LAST && Math.floor(n / VERSIONS_PER_FOLDER) === k);
+        if (found.length > 0) return Math.max(...found);
+      } finally {
+        await folder.handle.close();
+      }
     }
     return 0;
-  }
-
-  /**
-   * The folder a version is filed in.
-   *
-   * @param n - The version's number.
-   * @returns Its folder.
-   */
-  private folder_path(n: number): string {
-    return join(this.versions, `s${String(Math.floor(n / VERSIONS_PER_FOLDER))}`);
-  }
-
-  /**
-   * A version's file.
-   *
-   * @param n - The version's number.
-   * @returns Its file.
-   */
-  private version_path(n: number): string {
-    return join(this.folder_path(n), `${String(n)}.json`);
   }
 
   /**
@@ -570,19 +640,20 @@ export class TokenStore {
    * between the listing and the read sends the reader back to the listing.
    * With no version yet, the legacy file, or nothing.
    *
+   * @param root - The store's root, held.
    * @returns The current version.
    * @throws {Error} When it is not a token file, or no version holds records.
    */
-  private current_read(): StoreVersion {
+  private async current_read(root: HeldFolder): Promise<StoreVersion> {
     for (let attempt: number = 0; attempt < PUBLISH_TRIES; attempt++) {
-      const highest: number = this.highest_find();
+      const highest: number = await this.highest_find(root);
       if (highest === 0) {
-        const unversioned: StoreVersion | null = this.unversioned_read();
-        // The legacy file archived by another opener between the look and the read: its version now holds the truth.
+        const unversioned: StoreVersion | null = await this.unversioned_read(root);
+        // The legacy file migrated by another opener between the look and the read: its version now holds the truth.
         if (unversioned === null) continue;
         return unversioned;
       }
-      const text: string | null = this.versionText_read(this.version_path(highest));
+      const text: string | null = await this.versionText_read(root, highest);
       if (text !== null) return { n: highest, ...this.tokens_parse(text, `version ${String(highest)}`), legacy: false };
     }
     throw new Error(`the door's token store at ${this.path} has no version that holds its records`);
@@ -591,40 +662,56 @@ export class TokenStore {
   /**
    * The store while it has no version: the legacy file, or nothing.
    *
+   * @param root - The store's root, held.
    * @returns The legacy file's records, an empty store, or null when a version has appeared meanwhile (another opener migrated).
    * @throws {Error} When the legacy file cannot be read, is larger than a store, or is not a token file.
    */
-  private unversioned_read(): StoreVersion | null {
-    this.hooks.legacy_before?.();
-    const legacy: RecordsRead | null = this.legacy_read();
-    if (legacy !== null) return { n: 0, ...legacy, legacy: true };
-    return this.highest_find() > 0 ? null : { n: 0, tokens: [], skipped: [], legacy: false };
+  private async unversioned_read(root: HeldFolder): Promise<StoreVersion | null> {
+    await this.hooks.legacy_before?.();
+    const bytes: Buffer | null = await ownFile_read(this.path, VERSION_MAX_BYTES);
+    if (bytes !== null) return { n: 0, ...this.tokens_parse(bytes.toString('utf8'), 'the file'), migratedFrom: bytes_hash(bytes), legacy: true };
+    return (await this.highest_find(root)) > 0 ? null : { n: 0, tokens: [], skipped: [], legacy: false };
   }
 
   /**
-   * A version's text.
+   * Compares the one-file store from before with the one the store was
+   * migrated from, and says once at start if it has changed since (an
+   * older porter wrote it): it is left as it is either way, and the
+   * versions are the store. A one-file store that cannot be read is said,
+   * never a reason the versioned store does not open.
    *
-   * @param path - The version's file.
+   * @param from - The SHA-256 the store was migrated from.
+   */
+  private async legacy_compare(from: string | undefined): Promise<void> {
+    let bytes: Buffer | null;
+    try {
+      bytes = await ownFile_read(this.path, VERSION_MAX_BYTES);
+    } catch (error: unknown) {
+      this.legacyNote = `the one-file token store at ${this.path} could not be compared (${error instanceof Error ? error.message : String(error)}); the versions in ${this.versions} are the store`;
+      return;
+    }
+    if (bytes !== null && from !== undefined && bytes_hash(bytes) !== from) {
+      this.legacyNote = `the one-file token store at ${this.path} changed after it was migrated (an older porter wrote it); it is left as it is, and the versions in ${this.versions} are the store`;
+    }
+  }
+
+  /**
+   * A version's text, read through its folder held open.
+   *
+   * @param root - The store's root, held.
+   * @param n - The version.
    * @returns Its text, or null when it was emptied.
-   * @throws {Error} When it cannot be read, or is larger than a store.
+   * @throws {Error} When it cannot be read, is gone, or is larger than a store.
    */
-  private versionText_read(path: string): string | null {
-    const bytes: Buffer | null = ownFile_read(path, VERSION_MAX_BYTES);
-    if (bytes === null) throw new Error(`the door's token store at ${path} is gone`);
-    return bytes.length === 0 ? null : bytes.toString('utf8');
-  }
-
-  /**
-   * The legacy file's records, read directly (no look first that another opener could outrun).
-   *
-   * @returns Its records, or null when there is no file.
-   * @throws {Error} When it cannot be read, is larger than a store, or is not a token file.
-   */
-  private legacy_read(): RecordsRead | null {
-    // Held to the rule a version is held to, so it is never migrated into one the reader would refuse; refused, it stays as it is.
-    const bytes: Buffer | null = ownFile_read(this.path, VERSION_MAX_BYTES);
-    if (bytes === null) return null;
-    return { ...this.tokens_parse(bytes.toString('utf8'), 'the file'), migratedFrom: bytes_hash(bytes) };
+  private async versionText_read(root: HeldFolder, n: number): Promise<string | null> {
+    const folder: HeldFolder = await folder_hold(join(root.at, folder_name(n)));
+    try {
+      const bytes: Buffer | null = await ownFile_read(join(folder.at, `${String(n)}.json`), VERSION_MAX_BYTES);
+      if (bytes === null) throw new Error(`the door's token store at ${this.path} lost version ${String(n)}`);
+      return bytes.length === 0 ? null : bytes.toString('utf8');
+    } finally {
+      await folder.handle.close();
+    }
   }
 
   /**
@@ -635,7 +722,7 @@ export class TokenStore {
    *
    * @param text - The store's text.
    * @param which - Which file it is, for the words.
-   * @returns The records kept, and how many were left out.
+   * @returns The records kept, and those left out.
    * @throws {Error} When it is not a token file.
    */
   private tokens_parse(text: string, which: string): RecordsRead {
@@ -663,44 +750,97 @@ export class TokenStore {
    * later one was published: one slot per publication, so the upkeep stays
    * the same size however long the store has lived. Its name stays taken.
    *
+   * @param root - The store's root, held.
    * @param n - The version to empty.
    * @throws {Error} When it cannot be emptied.
    */
-  private version_empty(n: number): void {
+  private async version_empty(root: HeldFolder, n: number): Promise<void> {
     if (n < 1) return;
-    const path: string = this.version_path(n);
-    if (!existsSync(path) || lstatSync(path).size === 0) return;
-    const empty: string = join(this.temps, `empty.${String(process.pid)}.${randomBytes(6).toString('hex')}`);
-    writeFileSync(empty, '', { mode: 0o600, flag: 'wx' });
-    renameSync(empty, path);
+    const folder: HeldFolder = await folder_hold(join(root.at, folder_name(n)));
+    const temps: HeldFolder = await folder_hold(join(root.at, 'tmp'), true);
+    try {
+      const path: string = join(folder.at, `${String(n)}.json`);
+      const found: Stats | null = await lstat(path).catch((): null => null);
+      if (found === null || !found.isFile() || found.size === 0) return;
+      const empty: string = join(temps.at, `empty.${String(process.pid)}.${randomBytes(6).toString('hex')}`);
+      await writeFile(empty, '', { mode: 0o600, flag: 'wx' });
+      await rename(empty, path);
+    } finally {
+      await folder.handle.close();
+      await temps.handle.close();
+    }
   }
 
-  /** Sweeps temporary files a writer that died left behind. */
-  private temps_sweep(): void {
-    const cutoff: number = Date.now() - TEMP_LIFE_MS;
-    for (const name of readdirSync(this.temps)) {
-      const path: string = join(this.temps, name);
-      try {
-        if (statSync(path).mtimeMs < cutoff) rmSync(path, { force: true });
-      } catch {
-        // Swept meanwhile by another writer.
+  /**
+   * Sweeps temporary files a writer that died left behind: only names the
+   * store gives them, older than an hour, in the store's own folder.
+   *
+   * @param root - The store's root, held.
+   */
+  private async temps_sweep(root: HeldFolder): Promise<void> {
+    const temps: HeldFolder = await folder_hold(join(root.at, 'tmp'), true);
+    try {
+      const cutoff: number = Date.now() - TEMP_LIFE_MS;
+      for (const name of await readdir(temps.at)) {
+        if (!TEMP_NAME.test(name)) continue;
+        const path: string = join(temps.at, name);
+        const found: Stats | null = await lstat(path).catch((): null => null);
+        if (found !== null && found.isFile() && found.mtimeMs < cutoff) await rm(path, { force: true });
       }
+    } finally {
+      await temps.handle.close();
     }
   }
 }
 
 /**
- * The names in a folder.
+ * The folder of versions a version is filed in.
  *
- * @param folder - The folder.
- * @returns Its names; none when there is no folder.
- * @throws {Error} When it cannot be read for another reason.
+ * @param n - The version's number.
+ * @returns The folder's name.
+ *
+ * @example
+ * ```ts
+ * folder_name(1234); // 's1'
+ * ```
  */
-function names_list(folder: string): string[] {
+function folder_name(n: number): string {
+  return `s${String(Math.floor(n / VERSIONS_PER_FOLDER))}`;
+}
+
+/**
+ * Opens a folder of the store without following a link at its name, shows
+ * through the handle that it is a folder of this account's, left 0700, and
+ * gives the path that leads to the open folder itself.
+ *
+ * @param path - The folder.
+ * @param made - Whether to make it first when it is not there.
+ * @returns The folder, held.
+ * @throws {Error} When it is a link, not a folder, another account's, or the host gives no path to an open folder.
+ *
+ * @example
+ * ```ts
+ * const root = await folder_hold('/var/lib/porter/tokens.json.d');
+ * ```
+ */
+export async function folder_hold(path: string, made: boolean = false): Promise<HeldFolder> {
+  if (made) await mkdir(path, { mode: 0o700 }).catch((error: unknown): void => { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; });
+  let handle: FileHandle;
   try {
-    return readdirSync(folder);
+    handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new Error(`the door's token store folder ${path} is not a folder of its own (${(error as NodeJS.ErrnoException).code ?? 'unreadable'})`);
+  }
+  try {
+    const found: Stats = await handle.stat();
+    if (!found.isDirectory() || (typeof process.getuid === 'function' && found.uid !== process.getuid())) throw new Error(`the door's token store folder ${path} is not a folder of its own`);
+    if ((found.mode & 0o7777) !== 0o700) await handle.chmod(0o700);
+    const at: string = `/proc/self/fd/${String(handle.fd)}`;
+    const seen: Stats = await stat(at);
+    if (seen.dev !== found.dev || seen.ino !== found.ino) throw new Error('this host gives no path to an open folder (/proc/self/fd); the door\'s token store needs one');
+    return { handle, at };
+  } catch (error: unknown) {
+    await handle.close();
     throw error;
   }
 }
@@ -718,31 +858,31 @@ function names_list(folder: string): string[] {
  *
  * @example
  * ```ts
- * ownFile_read('/var/lib/porter/tokens.json', 4 * 1024 * 1024);
+ * await ownFile_read('/var/lib/porter/tokens.json', 4 * 1024 * 1024);
  * ```
  */
-export function ownFile_read(path: string, most: number): Buffer | null {
-  let handle: number;
+export async function ownFile_read(path: string, most: number): Promise<Buffer | null> {
+  let handle: FileHandle;
   try {
-    handle = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error: unknown) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw new Error(`the door's token store at ${path} is not a file of its own`);
   }
   try {
-    const found: Stats = fstatSync(handle);
+    const found: Stats = await handle.stat();
     if (!found.isFile() || (typeof process.getuid === 'function' && found.uid !== process.getuid())) throw new Error(`the door's token store at ${path} is not a file of its own`);
     if (found.size > most) throw new Error(`the door's token store at ${path} is larger than a token store; it is left as it is`);
     const bytes: Buffer = Buffer.alloc(found.size);
     let read: number = 0;
     while (read < found.size) {
-      const got: number = readSync(handle, bytes, read, found.size - read, read);
-      if (got === 0) break;
-      read += got;
+      const got: FileReadResult<Buffer> = await handle.read(bytes, read, found.size - read, read);
+      if (got.bytesRead === 0) break;
+      read += got.bytesRead;
     }
     return bytes.subarray(0, read);
   } finally {
-    closeSync(handle);
+    await handle.close();
   }
 }
 

@@ -36,7 +36,7 @@ function child_run(body: string, hooks: string = '{}'): Promise<{ out: string; c
   const script: string = `
     import { TokenStore } from ${JSON.stringify(BUILT)};
     const store = new TokenStore(${JSON.stringify(path)}, 30, () => new Date(), ${hooks});
-    store.load();
+    await store.load();
     ${body}
   `;
   return new Promise((resolve) => {
@@ -44,7 +44,8 @@ function child_run(body: string, hooks: string = '{}'): Promise<{ out: string; c
     let out: string = '';
     child.stdout.on('data', (chunk: Buffer): void => { out += chunk.toString(); });
     child.stderr.on('data', (chunk: Buffer): void => { out += chunk.toString(); });
-    child.on('exit', (code: number | null): void => { resolve({ out, code }); });
+    // Close, not exit: every byte the child wrote has been read by then.
+    child.on('close', (code: number | null): void => { resolve({ out, code }); });
   });
 }
 
@@ -55,51 +56,55 @@ describe('the token store across processes', () => {
   });
 
   it('four processes minting at once: every mint each reports is in the final store', async () => {
-    new TokenStore(path, 30).load();
+    await new TokenStore(path, 30).load();
     const runs = await Promise.all([0, 1, 2, 3].map((p: number) => child_run(`
-      for (let i = 0; i < 15; i++) { const made = store.mint('u${String(p)}-' + i + '@c/', 'u${String(p)}-' + i, 'n'); console.log('MADE ' + made.record.user); }
+      for (let i = 0; i < 15; i++) { const made = await store.mint('u${String(p)}-' + i + '@c/', 'u${String(p)}-' + i, 'n'); console.log('MADE ' + made.record.user); }
     `)));
     const reported: string[] = runs.flatMap((run) => run.out.split('\n').filter((line) => line.startsWith('MADE ')).map((line) => line.slice(5)));
     expect(runs.every((run) => run.code === 0)).toBe(true);
     expect(reported).toHaveLength(60);
     const final = new TokenStore(path, 30);
-    final.load();
-    expect(final.list().map((t) => t.user).sort()).toEqual([...reported].sort());
+    await final.load();
+    expect((await final.list()).map((t) => t.user).sort()).toEqual([...reported].sort());
   });
 
   it('a revocation and logins of the same token in other processes: revoked stays revoked', async () => {
     const seed = new TokenStore(path, 30);
-    seed.load();
-    const held = seed.mint('kim@c/', 'kim', 'laptop');
+    await seed.load();
+    const held = await seed.mint('kim@c/', 'kim', 'laptop');
     const logins = [0, 1, 2].map(() => child_run(`
-      for (let i = 0; i < 20; i++) store.login_authorize(${JSON.stringify(held.token)}, (u) => u + '@c/');
+      for (let i = 0; i < 20; i++) await store.login_authorize(${JSON.stringify(held.token)}, (u) => u + '@c/');
+      console.log('LOGINS DONE');
     `));
-    const revoke = child_run(`console.log('GONE ' + store.revoke('kim', 'laptop'));`);
-    const [r] = await Promise.all([revoke, ...logins]);
+    const revoke = child_run(`console.log('GONE ' + await store.revoke('kim', 'laptop'));`);
+    const [r, ...done] = await Promise.all([revoke, ...logins]);
     expect(r.out).toContain('GONE 1');
+    // Every login worker ran to its end and exited well: none was lost to a crash the store would hide.
+    expect(done.every((run) => run.code === 0 && run.out.includes('LOGINS DONE'))).toBe(true);
     const final = new TokenStore(path, 30);
-    final.load();
-    expect(final.check(held.token)).toEqual({ ok: false, why: 'unknown' });
+    await final.load();
+    expect(await final.check(held.token)).toEqual({ ok: false, why: 'unknown' });
   });
 
   it('a process that dies before its publication leaves nothing in the way; one that dies after leaves its version whole', async () => {
-    new TokenStore(path, 30).load();
-    const before = await child_run(`store.mint('a@c/', 'a', 'n');`, `{ read_after: () => process.exit(7) }`);
+    await new TokenStore(path, 30).load();
+    const before = await child_run(`await store.mint('a@c/', 'a', 'n');`, `{ read_after: () => process.exit(7) }`);
     expect(before.code).toBe(7);
-    const after = await child_run(`store.mint('b@c/', 'b', 'n');`, `{ publish_after: () => process.exit(8) }`);
+    const after = await child_run(`await store.mint('b@c/', 'b', 'n');`, `{ publish_after: () => process.exit(8) }`);
     expect(after.code).toBe(8);
-    const next = await child_run(`store.mint('c@c/', 'c', 'n'); console.log('OK');`);
+    const next = await child_run(`await store.mint('c@c/', 'c', 'n'); console.log('OK');`);
     expect(next.out).toContain('OK');
     const final = new TokenStore(path, 30);
-    final.load();
-    expect(final.list().map((t) => t.user).sort()).toEqual(['b', 'c']);
+    await final.load();
+    expect((await final.list()).map((t) => t.user).sort()).toEqual(['b', 'c']);
   });
 
   it('four first opens of a never-migrated store at once: one version 1, and every opener reads it', async () => {
     writeFileSync(path, JSON.stringify({ schemaVersion: 1, tokens: [{ name: 'laptop', identity: 'kim@c/', user: 'kim', hash: 'a'.repeat(64), created: '2026-11-01T00:00:00.000Z', expires: '2099-01-01T00:00:00.000Z', lastUsed: null }] }));
-    const runs = await Promise.all([0, 1, 2, 3].map(() => child_run(`console.log('SEES ' + store.list().map((t) => t.name).join(','));`)));
+    const runs = await Promise.all([0, 1, 2, 3].map(() => child_run(`console.log('SEES ' + (await store.list()).map((t) => t.name).join(','));`)));
     expect(runs.every((run) => run.code === 0 && run.out.includes('SEES laptop'))).toBe(true);
     expect(readdirSync(`${path}.d/s0`).filter((name) => name.endsWith('.json'))).toEqual(['1.json']);
-    expect(existsSync(path)).toBe(false);
+    // The file from before stays as it was: a copy the versions stand for.
+    expect(existsSync(path)).toBe(true);
   });
 });

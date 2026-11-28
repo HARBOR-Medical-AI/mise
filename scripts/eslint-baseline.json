@@ -58,7 +58,7 @@
     "jsdoc/check-tag-names": 22,
     "jsdoc/escape-inline-tags": 1,
     "jsdoc/require-example": 148,
-    "jsdoc/require-jsdoc": 257,
+    "jsdoc/require-jsdoc": 249,
     "jsdoc/require-param": 43,
     "jsdoc/require-returns": 24,
     "jsdoc/require-throws": 1,
