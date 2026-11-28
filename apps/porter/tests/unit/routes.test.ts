@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
 import { berthKey_compute } from '@fnndsc/calypso/berth';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
-import type { AddressInfo } from 'node:net';
+import { connect as netConnect, createServer as createNetServer, type AddressInfo, type Socket as NetSocket } from 'node:net';
 import { createServer, get as httpGet, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { SessionRegistry } from '../../src/registry.js';
 import { upstreamPath_build, mountUrl_split, berthHttp_derive, cookieGrant_read, type PorterApp } from '../../src/app.js';
@@ -390,6 +390,39 @@ describe('the door', () => {
     await door.app.close();
   });
 
+  it('a logout owes one berth stop for a grant that stood: none for one already expired, one for two logouts at once, and one for a retry after its write failed', async () => {
+    const berths = new FakeBerthHost();
+    berths.found = { identity: 'chris@https://cube.example.org/api/v1/', url: 'ws://127.0.0.1:4444', token: 'ATTACH' };
+    let fail: boolean = false;
+    const grantsFile: string = join(tokensDir, 'owed-grants.json');
+    let clock: number = Date.now();
+    const grants: GrantStore = new GrantStore(grantsFile, 1, (): number => clock, async (path: string, body: string): Promise<void> => {
+      if (fail) throw new Error('the disk is full');
+      await writeFile(path, body, { mode: 0o600 });
+    });
+    const door: PorterApp = await porterApp_build({ installed: {}, logoutEnds: true, config: { ...config, tokensFile: join(tokensDir, 'tokens.json') }, host: berths, grants, now: (): number => clock, mint: async () => ({ token: 'T' }) });
+    const login = async () => door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const logout = async (cookie: string) => door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie } });
+    // Expired before any sweep: its logout stops nothing.
+    const stale = await login();
+    clock += 3_600_000 + 1;
+    await logout(cookie_of(stale));
+    expect(berths.evicted).toEqual([]);
+    // Two logouts of one grant at once: one stop.
+    const twice = await login();
+    await Promise.all([logout(cookie_of(twice)), logout(cookie_of(twice))]);
+    expect(berths.evicted).toHaveLength(1);
+    // A logout whose write fails, a sweep that writes the denial, then the retry: it stops the berth once.
+    const failing = await login();
+    fail = true;
+    expect((await logout(cookie_of(failing))).statusCode).toBe(503);
+    fail = false;
+    await grants.grants_sweep();
+    expect((await logout(cookie_of(failing))).statusCode).toBe(200);
+    expect(berths.evicted).toHaveLength(2);
+    await door.app.close();
+  });
+
   it('a logout whose berth could not be stopped still logs the person out, and says the berth was not stopped', async () => {
     const berths = new FakeBerthHost();
     berths.evict = async (): Promise<boolean> => { throw new Error('the berth was not stopped: docker could not stop the container'); };
@@ -616,6 +649,31 @@ describe('a login never lands on a kernel older than the door\'s', () => {
     }
   });
 
+  it('an ending that lands after the stale-berth check decided to stay renews nothing on the berth it ended', async () => {
+    const identity: string = 'chris@https://cube.example.org/api/v1/';
+    const berths = new FakeBerthHost();
+    berths.found = { identity, url: 'ws://127.0.0.1:4444', token: 'OLD', versions: { brasa: '0.31.5', calypso: '0.19.2', chell: '5.10.1' } };
+    let door: PorterApp | null = null;
+    // The check's last word before it answers "stay" is this line: the ending lands right then, a current berth up in its place.
+    const log = (line: string): void => {
+      if (!line.startsWith('kept chris')) return;
+      door?.registry.generation_raise(berthKey_compute(identity));
+      berths.found = { identity, url: 'ws://127.0.0.1:5555', token: 'FRESH', versions: { brasa: '0.33.0', calypso: '0.19.5', chell: '5.10.4' } };
+    };
+    door = await porterApp_build({ config, host: berths, mint: async () => ({ token: 'x' }), installed: { brasa: '0.33.0', calypso: '0.19.5', chell: '5.10.4' }, log });
+    const fetched = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ joblets: [{ number: 1, line: 'sleep', waiting: false }] }), { status: 200 }));
+    try {
+      const login = await door.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+      expect((login.json() as { state: string }).state).toBe('attached');
+      // One renewal, to the berth that stands; none to the one ended while the check answered.
+      expect(berths.renewed).toHaveLength(1);
+      expect(door.registry.get(berthKey_compute(identity))?.berth.token).toBe('FRESH');
+    } finally {
+      fetched.mockRestore();
+      await door.app.close();
+    }
+  });
+
   it('a login held while its new token is taken to the berth, across an ending, does not attach to the berth that was ended', async () => {
     const identity: string = 'chris@https://cube.example.org/api/v1/';
     const berths = new FakeBerthHost();
@@ -815,6 +873,87 @@ describe('the wire through the mount', () => {
     if (client.readyState === WebSocket.OPEN) client.send('after');
     await new Promise((r) => setTimeout(r, 100));
     expect(heard).toEqual(['before']);
+  });
+
+  it('a wire whose daemon stalls mid-frame is torn down within its bound after the logout', async () => {
+    // A daemon that answers the upgrade and then sends half a frame, and nothing more.
+    const stalled = createNetServer((socket: NetSocket): void => {
+      socket.once('data', (): void => {
+        socket.write('HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-accept: x\r\n\r\n');
+        socket.write(Buffer.from([0x81, 0x7e, 0x01]));
+      });
+    });
+    await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', () => resolve()));
+    const port: number = (stalled.address() as AddressInfo).port;
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
+    const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (session.json() as { key: string }).key;
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    const raw: NetSocket = netConnect(porterPort, '127.0.0.1');
+    let closedAt: number | null = null;
+    raw.on('close', () => { closedAt = Date.now(); });
+    raw.on('error', () => undefined);
+    // Read what arrives, as a browser does, so the door's close is seen.
+    raw.resume();
+    await new Promise<void>((resolve) => raw.once('connect', () => resolve()));
+    raw.write(`GET /s/${key}/?door HTTP/1.1\r\nhost: 127.0.0.1\r\nupgrade: websocket\r\nconnection: upgrade\r\nsec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\norigin: ${DOOR_ORIGIN}\r\ncookie: ${cookie_of(session)}\r\n\r\n`);
+    await new Promise((r) => setTimeout(r, 200));
+    // The wire is open: nothing has closed it before the logout.
+    expect(closedAt).toBeNull();
+    const asked: number = Date.now();
+    await built.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: cookie_of(session) } });
+    for (let i = 0; i < 40 && closedAt === null; i++) await new Promise((r) => setTimeout(r, 100));
+    expect(closedAt).not.toBeNull();
+    expect((closedAt ?? Infinity) - asked).toBeLessThan(3000);
+    raw.destroy();
+    stalled.close();
+  });
+
+  it('a switch closes the wire and the boot stream opened under the grant it moved, and leaves another browser\'s', async () => {
+    const port: number = (daemon.address() as AddressInfo).port;
+    host.found = { identity: 'chris@https://cube.example.org/api/v1/', url: `ws://127.0.0.1:${port}`, token: 'ATTACH' };
+    const login = async () => built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const first = await login();
+    const second = await login();
+    const key: string = (first.json() as { key: string }).key;
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    const open = async (cookie: string): Promise<WebSocket> => {
+      const client: WebSocket = new WebSocket(`ws://127.0.0.1:${porterPort}/s/${key}/?door`, { headers: { cookie, origin: DOOR_ORIGIN } });
+      await new Promise<void>((resolve, reject) => { client.once('open', () => resolve()); client.once('error', reject); });
+      return client;
+    };
+    const a: WebSocket = await open(cookie_of(first));
+    const b: WebSocket = await open(cookie_of(second));
+    const closedA: Promise<number> = new Promise((resolve) => a.once('close', (code: number) => resolve(code)));
+    const moved = await built.grants.grant_move(cookieGrant_read(cookie_of(first), config.secret)?.id ?? '', 'fedcba9876543210');
+    expect(moved).not.toBeNull();
+    expect(await closedA).toBe(4401);
+    const echoed: Promise<string> = new Promise((resolve) => b.once('message', (data: RawData) => resolve(data.toString())));
+    b.send('still');
+    expect(await echoed).toBe('echo:still');
+    b.close();
+  });
+
+  it('ends a boot stream with nothing to say at its grant\'s hour, and leaves another browser\'s', async () => {
+    await built.app.close();
+    host.found = null;
+    host.report = { lines: [], state: 'booting' };
+    let clock: number = Date.now();
+    built = await porterApp_build({ installed: {}, config: { ...config, cookieHours: 0.3 / 3600, tokensFile: join(tokensDir, 'tokens.json') }, host, now: (): number => clock, mint: async () => ({ token: 'T' }) });
+    const session = await built.app.inject({ method: 'POST', url: '/login', headers: { accept: 'application/json' }, payload: { username: 'chris', password: 'right' } });
+    const key: string = (session.json() as { key: string }).key;
+    await built.app.listen({ host: '127.0.0.1', port: 0 });
+    const porterPort: number = (built.app.server.address() as AddressInfo).port;
+    const ended: Promise<void> = new Promise((resolve, reject) => {
+      httpGet({ host: '127.0.0.1', port: porterPort, path: `/boot/${key}`, headers: { cookie: cookie_of(session) } }, (response: IncomingMessage) => {
+        response.resume();
+        response.on('end', () => resolve());
+      }).on('error', reject);
+    });
+    await ended;
+    expect(host.listener).toBeNull();
   });
 
   it('closes an open wire at its grant\'s hour, with no traffic and no sweep between', async () => {
@@ -1345,6 +1484,36 @@ describe('door tokens (chell auth)', () => {
     expect(unkept.headers['set-cookie']).toBeUndefined();
     expect((await store.list()).map((t) => t.hash)).toEqual([standing.record.hash]);
     expect((await store.check(standing.token)).ok).toBe(true);
+    await door.app.close();
+  });
+
+  it('a login whose named token does not stand sets no cookie: a settlement that throws, and one superseded meanwhile', async () => {
+    const path: string = join(tokensDir, 'named.json');
+    const other: TokenStore = new TokenStore(path, 30);
+    await other.load();
+    let calls: number = 0;
+    let throwAt: number = -1;
+    let replaceAt: number = -1;
+    const store: TokenStore = new TokenStore(path, 30, (): Date => new Date(), {
+      read_after: async (): Promise<void> => {
+        calls += 1;
+        if (calls === throwAt) throw new Error('the store is busy');
+        if (calls === replaceAt) await other.mint('chris@https://cube.example.org/api/v1/', 'chris', 'cron@titan');
+      },
+    });
+    host.found = up;
+    const door: PorterApp = await porterApp_build({ installed: {}, config: { ...config, tokensFile: path }, host, tokens: store, mint: async () => ({ token: 'T' }) });
+    const ask = async () => door.app.inject({ method: 'POST', url: '/login', headers: { 'content-type': 'application/json' }, payload: { username: 'chris', password: 'right', tokenName: 'cron@titan' } });
+    // A token of that name stands, so the settlement has one to retire: the mint is the login's first change, the settlement its second.
+    await other.mint('chris@https://cube.example.org/api/v1/', 'chris', 'cron@titan');
+    calls = 0; throwAt = 2;
+    const thrown = await ask();
+    expect(thrown.statusCode).toBe(503);
+    expect(thrown.headers['set-cookie']).toBeUndefined();
+    calls = 0; throwAt = -1; replaceAt = 2;
+    const superseded = await ask();
+    expect(superseded.statusCode).toBe(409);
+    expect(superseded.headers['set-cookie']).toBeUndefined();
     await door.app.close();
   });
 

@@ -267,6 +267,14 @@ export function cookie_carried(cookieHeader: string | undefined): boolean {
   return cookieHeader.split(';').some((part: string): boolean => part.slice(0, Math.max(0, part.indexOf('='))).trim() === DOOR_COOKIE);
 }
 
+/** What a logout's berth stop came to. */
+interface LogoutLeave {
+  /** Whether the logout's grant was owed a stop (it stood when the logout came). */
+  owed: boolean;
+  /** Why the berth was not stopped, when it was owed and could not be. */
+  unstopped: string | null;
+}
+
 /** A request's headers, as far as the door's cookie is concerned. */
 interface CookieHeaders {
   /** The raw `Cookie` header. */
@@ -370,6 +378,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
   if (tokens.legacyNote !== null) options.log?.(tokens.legacyNote);
   if (tokens.skipped.length > 0) options.log?.(`the door's token store holds ${String(tokens.skipped.length)} record(s) of the wrong shape, left out: ${tokens.skipped.join(', ')}`);
   const codes: DeviceCodes = options.codes ?? new DeviceCodes(options.now);
+  // The berth stops owed by logouts of grants that stood, by grant: one each, kept across a logout whose write failed.
+  const stopsOwed: Map<string, string> = new Map();
   // Renewals waiting to be dropped: those whose code lapsed untaken, and those a drop failed for, kept for the next tick.
   let dropsHeld: MintedToken[] = [];
   let dropping: boolean = false;
@@ -464,23 +474,29 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
    */
   const requestKey_read = (request: FastifyRequest): string | null => requestGrant_read(request.headers)?.key ?? null;
   /**
-   * Grants a key and sets the cookie for it; the grant is on disk before the cookie is sent.
+   * Grants a key; the grant is on disk before any cookie names it (the caller publishes it at success).
    *
-   * @param request - The request (whether it came over TLS sets the cookie's Secure).
-   * @param reply - The answer the cookie is set on.
    * @param key - The session key granted.
    * @returns The grant, or null when the grants file could not be written (the route answers 503, no cookie).
    */
-  const grant_issue = async (request: FastifyRequest, reply: FastifyReply, key: string): Promise<DoorGrant | null> => {
-    let grant: DoorGrant;
+  const grant_issue = async (key: string): Promise<DoorGrant | null> => {
     try {
-      grant = await grants.grant_make(key);
+      return await grants.grant_make(key);
     } catch (error: unknown) {
       options.log?.(`could not keep a grant for a login: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
+  };
+  /**
+   * Sets the cookie for a grant: the last step of a login that succeeded.
+   *
+   * @param request - The request (whether it came over TLS sets the cookie's Secure).
+   * @param reply - The answer the cookie is set on.
+   * @param key - The session key.
+   * @param grant - The grant made for it.
+   */
+  const grant_publish = (request: FastifyRequest, reply: FastifyReply, key: string, grant: DoorGrant): void => {
     void reply.setCookie(DOOR_COOKIE, grantCookie_value(key, grant.id), doorCookie_options(config.cookieHours, cookie_isSecure(request)));
-    return grant;
   };
 
   // Its own version beside its sessions: a deploy that would replace porter says which version it replaces and what it ends.
@@ -792,16 +808,36 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     const renewal_undo = async (): Promise<void> => {
       if (settled || renewal === null) return;
       settled = true;
-      await tokens.renewal_settle(renewal, false).catch((error: unknown): void => { options.log?.(`a failed login's token could not be dropped: ${error instanceof Error ? error.message : String(error)}`); });
+      const dropping: MintedToken = renewal;
+      await tokens.renewal_settle(dropping, false).catch((error: unknown): void => {
+        // Kept for the sweep's retry: a token nobody received never stands forgotten.
+        dropsHeld.push(dropping);
+        options.log?.(`a failed login's token could not be dropped yet: ${error instanceof Error ? error.message : String(error)}; it is tried again`);
+      });
     };
     const login_succeed = async (answerMake: () => unknown): Promise<unknown> => {
-      const issued: DoorGrant | null = await grant_issue(request, reply, key);
+      const issued: DoorGrant | null = await grant_issue(key);
       if (issued === null) {
         await renewal_undo();
         return reply.code(503).send({ error: 'the door could not keep your login; try again' });
       }
-      if (renewal !== null) await tokens.renewal_settle(renewal, true);
+      // The named token settles before any cookie is set; one that does not stand (superseded, expired, or a
+      // settlement that threw) fails the login: the grant goes unpublished and is ended, and the token undone.
+      if (renewal !== null) {
+        let outcome: RenewalOutcome | null = null;
+        try {
+          outcome = await tokens.renewal_settle(renewal, true);
+        } catch (error: unknown) {
+          options.log?.(`a login's named token could not be settled: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (outcome?.state !== 'current') {
+          await grants.grant_end(issued.id).catch((): undefined => undefined);
+          await renewal_undo();
+          return reply.code(outcome === null ? 503 : 409).send({ error: outcome === null ? 'the door could not keep your token; try again' : `the token this login asked for was ${outcome.state} before it was kept; try again` });
+        }
+      }
       settled = true;
+      grant_publish(request, reply, key, issued);
       return answerMake();
     };
     const starting_answer = (): Promise<unknown> => login_succeed((): unknown => (wantsJson ? answer({ key, mount: `/s/${key}/`, state: 'starting' }) : reply.redirect(`/greet/${key}`, 303)));
@@ -854,6 +890,8 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       if (stale === 'moved') continue;
       if (stale === 'restart') return await starting_answer();
       // A new login's token reaches a berth already up: the launcher rewrites its token file.
+      // Asked again just before the renewal: an ending that ran during the stale-berth check renews nothing on the old berth.
+      if (generation_moved()) continue;
       if (found !== null && cubeToken !== null && host.token_renew !== undefined) {
         await host.token_renew(identity, username, config.cubeUrl, cubeToken).catch((error: unknown): void => { options.log?.(`${username}'s new token did not reach the berth: ${error instanceof Error ? error.message : String(error)}`); });
       }
@@ -1059,11 +1097,29 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
     }
   };
 
+  /**
+   * Pays the berth stop a logout's grant was owed, if it was: once, by the first logout of that grant to get through.
+   *
+   * @param held - The grant the logout's cookie named, if any.
+   * @returns Whether a stop was owed, and why the berth was not stopped when it was owed and is not.
+   */
+  const logout_leave = async (held: GrantNamed | null): Promise<LogoutLeave> => {
+    const owed: string | undefined = held === null ? undefined : stopsOwed.get(held.id);
+    if (held === null || owed === undefined) return { owed: false, unstopped: null };
+    stopsOwed.delete(held.id);
+    const identity: string | null = options.logoutEnds === true ? registry.identity_find(owed) : null;
+    return { owed: true, unstopped: identity === null ? null : await logout_stop(owed, identity) };
+  };
+
   app.post('/logout', async (request: FastifyRequest, reply: FastifyReply): Promise<unknown> => {
     // On a door that starts berths a logout stops the person's berth; its volumes, and so their home, stay.
     // The person is logged out of the door either way.
     // Any cookie this door signed may ask, admitted or not: a logout whose write failed is asked again by the same cookie.
     const held: GrantNamed | null = cookieGrant_read(request.headers.cookie, config.secret);
+    // A logout of a grant that stands now owes one stop of the berth (on a door that stops berths): owed once, kept
+    // across a write that fails, paid by whichever logout of that grant gets through, and never by one of a grant
+    // that had already expired, ended or moved.
+    if (held !== null && grants.grant_admits(held.id, held.key)) stopsOwed.set(held.id, held.key);
     // The grant ends first: this cookie lets nobody in from now on, and what was opened under it is closed.
     let ended: 'ended' | 'moved' | 'gone' = 'gone';
     if (held !== null) {
@@ -1075,13 +1131,16 @@ export async function porterApp_build(options: PorterAppOptions): Promise<Porter
       }
     }
     // A switch moved this browser's grant while it logged out: the cookie it holds now is the switch's, and stays.
-    if (ended === 'moved') return reply.code(409).send({ error: 'this browser switched session while it logged out; log out again' });
-    const leaving: string | null = options.logoutEnds === true && ended === 'ended' ? held?.key ?? null : null;
-    const identity: string | null = leaving === null ? null : registry.identity_find(leaving);
-    const unstopped: string | null = leaving !== null && identity !== null ? await logout_stop(leaving, identity) : null;
-    void reply.clearCookie(DOOR_COOKIE, { path: '/' });
+    if (ended === 'moved') {
+      if (held !== null) stopsOwed.delete(held.id);
+      return reply.code(409).send({ error: 'this browser switched session while it logged out; log out again' });
+    }
+    const leaving: LogoutLeave = await logout_leave(held);
+    // A cookie whose grant this logout did not end (one gone already: after a restart, or a second switch) is left
+    // as the browser holds it: it may be the cookie a switch set since.
+    if (held === null || ended === 'ended' || leaving.owed) void reply.clearCookie(DOOR_COOKIE, { path: '/' });
     if (!request_wantsJson(request)) return reply.redirect('/login', 303);
-    return unstopped === null ? { ok: true } : { ok: true, berth: 'not stopped', reason: unstopped };
+    return leaving.unstopped === null ? { ok: true } : { ok: true, berth: 'not stopped', reason: leaving.unstopped };
   });
 
   app.get('/boot/:key', async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
