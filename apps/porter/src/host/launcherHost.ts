@@ -27,6 +27,8 @@ interface LauncherBerth {
   state: 'running' | 'stopped';
   url: string | null;
   token: string | null;
+  /** Why a running berth's address could not be read, when it could not. */
+  unread?: string;
 }
 
 /** How porter reaches the launcher: its socket or loopback address, and the secret every call carries. */
@@ -218,8 +220,27 @@ export class LauncherHost implements SessionHost {
     if (who === null) return null;
     const answer = await launcher_call(this.reach, 'GET', `/berths/status?user=${encodeURIComponent(who.user)}&cubeUrl=${encodeURIComponent(who.cubeUrl)}`);
     const berths: LauncherBerth[] = Array.isArray(answer.body['berths']) ? answer.body['berths'] as LauncherBerth[] : [];
-    const own: LauncherBerth | undefined = berths.find((one: LauncherBerth): boolean => one.identity === identity);
+    // A running row of theirs is the one, wherever it comes in the list (a stopped legacy container may come first).
+    const own: LauncherBerth | undefined = berths.find((one: LauncherBerth): boolean => one.identity === identity && one.state === 'running') ?? berths.find((one: LauncherBerth): boolean => one.identity === identity);
     return own === undefined ? null : LauncherHost.berth_take(own);
+  }
+
+  /** @inheritdoc */
+  public async berthUp_read(identity: string): Promise<Berth | null> {
+    const who = identity_split(identity);
+    if (who === null) return null;
+    const answer = await launcher_call(this.reach, 'GET', `/berths/status?user=${encodeURIComponent(who.user)}&cubeUrl=${encodeURIComponent(who.cubeUrl)}`);
+    // An answer that is not a list of berths says nothing about which is up: it is not "none is".
+    if (answer.status !== 200 || !Array.isArray(answer.body['berths'])) throw new Error(`the launcher could not say which berth is up (it answered ${String(answer.status)})`);
+    const berths: LauncherBerth[] = answer.body['berths'] as LauncherBerth[];
+    // Any running row of theirs counts, whatever order the rows come in, and one running container that says
+    // whose it is not could be theirs; two running of theirs, or one whose address is unread, is not one answer.
+    const running: LauncherBerth[] = berths.filter((one: LauncherBerth): boolean => one.state === 'running' && (one.identity === identity || one.identity === ''));
+    const unsure: LauncherBerth | undefined = running.find((one: LauncherBerth): boolean => one.identity === '' || one.url === null || one.token === null);
+    if (unsure !== undefined) throw new Error(`the launcher could not say which berth is up: ${typeof unsure.unread === 'string' ? unsure.unread : 'its address is unread'}`);
+    if (running.length > 1) throw new Error('the launcher could not say which berth is up: more than one runs for this identity');
+    const up: LauncherBerth | undefined = running[0];
+    return up === undefined ? null : LauncherHost.berth_take(up);
   }
 
   /** @inheritdoc */

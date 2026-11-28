@@ -23,6 +23,8 @@ export interface SessionEntry {
   activeAt: number;
   /** How many wires — relayed WebSockets — stand open on it right now. */
   wires: number;
+  /** Which life of the session this is: one boot, from its start to the berth it answers at. */
+  life: number;
 }
 
 /** A session the door has admitted but whose berth has not answered yet. */
@@ -30,6 +32,23 @@ interface PendingEntry {
   key: string;
   identity: string;
   user: string;
+  /** The life this boot begins. */
+  life: number;
+  /** The berth this boot displaced, and its life: when that same berth is found again (its stop failed), it keeps its own. */
+  replaces?: DisplacedLife;
+}
+
+/**
+ * A berth a boot displaced, with the life it had.
+ *
+ * @example
+ * const displaced: DisplacedLife | null = registry.displaced_get(key);
+ */
+export interface DisplacedLife {
+  /** The berth. */
+  berth: Berth;
+  /** Its life. */
+  life: number;
 }
 
 /**
@@ -52,6 +71,8 @@ export interface EvictionClaim {
 export class SessionRegistry {
   private readonly byKey: Map<string, SessionEntry> = new Map();
   private readonly pending: Map<string, PendingEntry> = new Map();
+  /** The last life handed out; every boot, and every berth found that is not the one on record, is a new one. */
+  private lifeLast: number = 0;
   /**
    * How many times each key's session has been ended, or begun to be. It is
    * raised when an ending begins and never lowered, so an ending that has
@@ -82,11 +103,32 @@ export class SessionRegistry {
     return berthKey_compute(identity);
   }
 
-  /** Records an identity and the berth it answers at; a known one keeps its wires. */
+  /**
+   * Records an identity and the berth it answers at; a known one keeps its wires. The berth on record again (the
+   * same address and attach token) keeps its life; a boot that settles, or is booting when its berth is found,
+   * gives the berth the boot's (the berth it was to replace, found again, keeps its own); any other berth is a
+   * life of its own.
+   *
+   * @param identity - The identity.
+   * @param user - The person.
+   * @param berth - The berth it answers at.
+   * @returns The entry.
+   *
+   * @example
+   * const entry: SessionEntry = registry.note(identity, user, berth);
+   */
   public note(identity: string, user: string, berth: Berth): SessionEntry {
     const key: string = this.key_derive(identity);
     const known: SessionEntry | undefined = this.byKey.get(key);
-    const entry: SessionEntry = { key, identity, user, berth, activeAt: this.clock(), wires: known?.wires ?? 0 };
+    const same: boolean = known !== undefined && known.berth.url === berth.url && known.berth.token === berth.token;
+    // A boot starts only when no live session answers, so a berth found while one is booting is that boot's: it
+    // takes the boot's life, and the boot is over; unless it is the very berth the boot was to replace, still up
+    // because its stop failed, which keeps the life it had.
+    const booted: PendingEntry | undefined = this.pending.get(key);
+    this.pending.delete(key);
+    const survivor: boolean = booted?.replaces !== undefined && booted.replaces.berth.url === berth.url && booted.replaces.berth.token === berth.token;
+    const bootLife: number | undefined = survivor ? booted?.replaces?.life : booted?.life;
+    const entry: SessionEntry = { key, identity, user, berth, activeAt: this.clock(), wires: known?.wires ?? 0, life: same && known !== undefined ? known.life : bootLife ?? ++this.lifeLast };
     this.byKey.set(key, entry);
     return entry;
   }
@@ -123,11 +165,45 @@ export class SessionRegistry {
    * held for the identity names a daemon that is gone — it is dropped, or
    * the mount would keep sending the new session's traffic to the dead
    * one's port.
+   *
+   * @param identity - The identity.
+   * @param user - The person.
+   * @param joins - The login joins the boot already under way, rather than beginning one.
    */
-  public pending_note(identity: string, user: string): void {
+  public pending_note(identity: string, user: string, joins: boolean = false): void {
     const key: string = this.key_derive(identity);
+    const displaced: SessionEntry | undefined = this.byKey.get(key);
     this.byKey.delete(key);
-    this.pending.set(key, { key, identity, user });
+    // A login that joins a boot under way keeps that boot as it is (its row, so a settle under way still finds
+    // it); any other note begins a boot, and a life, remembering the berth it displaces.
+    if (joins && this.pending.has(key)) return;
+    this.pending.set(key, { key, identity, user, life: ++this.lifeLast, ...(displaced === undefined ? {} : { replaces: { berth: displaced.berth, life: displaced.life } }) });
+  }
+
+  /**
+   * Which life of a key's session stands now, booting or answering.
+   *
+   * @param key - The session key.
+   * @returns The life, or null when no session is recorded under the key.
+   *
+   * @example
+   * const life: number | null = registry.life_get(key);
+   */
+  public life_get(key: string): number | null {
+    return this.byKey.get(key)?.life ?? this.pending.get(key)?.life ?? null;
+  }
+
+  /**
+   * The berth a key's pending boot displaced, and the life it had: a restart's boot names the berth it is to stop.
+   *
+   * @param key - The session key.
+   * @returns The displaced berth and its life, or null when no boot is pending or it displaced none.
+   *
+   * @example
+   * const displaced: DisplacedLife | null = registry.displaced_get(key);
+   */
+  public displaced_get(key: string): DisplacedLife | null {
+    return this.pending.get(key)?.replaces ?? null;
   }
 
   /** The identity behind a key, admitted or still booting. */
@@ -147,8 +223,10 @@ export class SessionRegistry {
     const waiting: PendingEntry | undefined = this.pending.get(key);
     if (waiting === undefined) return this.byKey.get(key) ?? null;
     const berth: Berth | null = await host.find(identity);
+    // The answer is of the boot that was waiting when it was asked: one replaced, settled or retired meanwhile
+    // takes nothing from it, and what stands now is what there is.
+    if (this.pending.get(key) !== waiting) return this.byKey.get(key) ?? null;
     if (berth === null) return null;
-    this.pending.delete(key);
     return this.note(identity, waiting.user, berth);
   }
 

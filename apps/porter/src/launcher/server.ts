@@ -56,7 +56,7 @@ export function secret_matches(header: string | undefined, secret: string): bool
  * @returns Its fields.
  */
 function berth_render(berth: BerthState): Record<string, unknown> {
-  return { identity: berth.identity, user: berth.user, state: berth.state, url: berth.url, token: berth.token, container: berth.container, cohort: berth.cohort };
+  return { identity: berth.identity, user: berth.user, state: berth.state, url: berth.url, token: berth.token, container: berth.container, cohort: berth.cohort, ...(berth.unread === undefined ? {} : { unread: berth.unread }) };
 }
 
 /**

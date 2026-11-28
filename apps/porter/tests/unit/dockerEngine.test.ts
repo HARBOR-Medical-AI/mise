@@ -198,6 +198,8 @@ describe('porter\'s host: the CUBE id and the launcher\'s answers', () => {
   const asked: Array<{ method: string; path: string; body: string }> = [];
   /** What the launcher answers a stop with: 200, or a failure of its own. */
   let stopStatus: number = 200;
+  let statusCode: number = 200;
+  let statusBody: Record<string, unknown> = { berths: [] };
   beforeAll(async () => {
     cube = createServer((req: IncomingMessage, res: ServerResponse): void => {
       const auth: string = req.headers.authorization ?? '';
@@ -211,6 +213,11 @@ describe('porter\'s host: the CUBE id and the launcher\'s answers', () => {
     launcher = createServer((req: IncomingMessage, res: ServerResponse): void => {
       void body_read(req).then((body: string): void => {
         asked.push({ method: req.method ?? '', path: req.url ?? '', body });
+        if ((req.url ?? '').startsWith('/berths/status') && statusCode !== 200) {
+          res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'the launcher failed' }));
+          return;
+        }
         if ((req.url ?? '').startsWith('/berths/stop') && stopStatus !== 200) {
           res.writeHead(stopStatus, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'docker could not stop the container' }));
@@ -218,7 +225,7 @@ describe('porter\'s host: the CUBE id and the launcher\'s answers', () => {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         if ((req.url ?? '').startsWith('/berths/stop')) { res.end(JSON.stringify({ stopped: true })); return; }
-        if ((req.url ?? '').startsWith('/berths/status')) { res.end(JSON.stringify({ berths: [] })); return; }
+        if ((req.url ?? '').startsWith('/berths/status')) { res.end(JSON.stringify(statusBody)); return; }
         res.end(JSON.stringify({ identity: identity_normalise('ana', cubeUrl), user: 'ana', state: 'running', url: 'ws://10.9.0.2:1', token: 'a', container: 'c', cohort: 'none' }));
       });
     });
@@ -234,6 +241,24 @@ describe('porter\'s host: the CUBE id and the launcher\'s answers', () => {
     expect(await cubeUserId_read(cubeUrl, 'good')).toBe(42);
     await expect(cubeUserId_read(cubeUrl, 'bad')).rejects.toThrow('CUBE answered 401');
     await expect(cubeUserId_read(cubeUrl, 'odd')).rejects.toThrow('did not say who');
+  });
+
+  it('reading which berth is up for a decision: a status error and an answer without a list are errors, an empty list is none up', async () => {
+    const host: LauncherHost = new LauncherHost({ listen: join(launcherDir, 'l.sock'), secret: 's'.repeat(40) }, async (): Promise<number> => 42);
+    const identity: string = identity_normalise('ana', cubeUrl);
+    try {
+      statusCode = 500;
+      await expect(host.berthUp_read(identity)).rejects.toThrow('the launcher could not say which berth is up (it answered 500)');
+      expect(await host.find(identity)).toBeNull();
+      statusCode = 200;
+      statusBody = { nothing: true };
+      await expect(host.berthUp_read(identity)).rejects.toThrow('could not say which berth is up');
+      statusBody = { berths: [] };
+      expect(await host.berthUp_read(identity)).toBeNull();
+    } finally {
+      statusCode = 200;
+      statusBody = { berths: [] };
+    }
   });
 
   it('a stop the launcher failed is an error, not "nothing was running"; a restart then fails its boot and starts no second berth', async () => {

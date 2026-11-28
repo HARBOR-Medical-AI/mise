@@ -37,6 +37,26 @@ class FakeDocker implements DockerApi {
   stopStatus: number = 204;
   /** A berth whose session never writes its berth file. */
   silent: boolean = false;
+  /** What the engine answers a container listing with; 200 unless a test has it fail. */
+  listStatus: number = 200;
+  /** An identity every berth file claims instead of its own; null: each names its own. */
+  fileIdentity: string | null = null;
+  /** What every berth file holds instead, verbatim; null: a well-formed file. */
+  fileText: string | null = null;
+  /** A state the engine lists a container in other than running or exited (paused, restarting), by name. */
+  states: Map<string, string> = new Map();
+  /** What the engine answers a volume listing with; 200 unless a test has it fail. */
+  volumeStatus: number = 200;
+  /** Containers whose inspect the engine fails, by name, with the status it answers. */
+  inspectStatus: Map<string, number> = new Map();
+  /** What the engine answers a wire's inspect with; 200 unless a test has it fail. */
+  wireInspectStatus: number = 200;
+  /** Every destructive call the engine was asked: a removal, a stop, a disconnect. */
+  destroys: string[] = [];
+  /** Every call the engine was asked, method and route. */
+  calls: string[] = [];
+  /** What a wire's inspect answers instead of its members, by name. */
+  wireBodies: Map<string, unknown> = new Map();
   /** Each container's log, a line each; absent: nothing written. */
   logs: Map<string, string[]> = new Map();
   /** Who follows each container's log, and how each follow ends. */
@@ -94,8 +114,12 @@ class FakeDocker implements DockerApi {
 
   async call(method: string, path: string, body?: unknown): Promise<DockerAnswer> {
     const [route = '', query = ''] = path.split('?');
+    if (method === 'DELETE' || route.endsWith('/stop') || route.endsWith('/disconnect')) this.destroys.push(`${method} ${route}`);
     const parts: string[] = route.split('/');
-    const name: string = decodeURIComponent(parts[2] ?? '');
+    const asked: string = decodeURIComponent(parts[2] ?? '');
+    // A container is named by its name or by its id (`cid-<name>`), as the engine takes either.
+    const name: string = parts[1] === 'containers' && asked.startsWith('cid-') ? asked.slice('cid-'.length) : asked;
+    this.calls.push(`${method} ${route}`);
     if (method === 'POST' && route === '/images/create') {
       const image: string = new URLSearchParams(query).get('fromImage') ?? '';
       this.pulls.push(image);
@@ -117,6 +141,8 @@ class FakeDocker implements DockerApi {
     if (route.endsWith('/connect') && parts[1] === 'networks') { this.networks.get(name)?.members.add((body as { Container: string }).Container); return { status: 200, body: null }; }
     if (route.endsWith('/disconnect') && parts[1] === 'networks') { this.networks.get(name)?.members.delete((body as { Container: string }).Container); return { status: 200, body: null }; }
     if (method === 'GET' && parts[1] === 'networks') {
+      if (this.wireInspectStatus !== 200) return { status: this.wireInspectStatus, body: { message: 'the engine is busy' } };
+      if (this.wireBodies.has(name)) return { status: 200, body: this.wireBodies.get(name) };
       const net = this.networks.get(name);
       return net === undefined ? { status: 404, body: {} } : { status: 200, body: { Name: name, Containers: Object.fromEntries([...net.members].map((member) => [member, { Name: member }])), IPAM: { Config: [{ Subnet: '172.18.0.0/16', ...(this.gateway !== null ? { Gateway: this.gateway } : {}) }] } } };
     }
@@ -128,6 +154,7 @@ class FakeDocker implements DockerApi {
     if (route === '/volumes/create') { const spec = body as { Name: string; Labels: Record<string, string> }; this.volumes.set(spec.Name, spec.Labels); return { status: 201, body: {} }; }
     if (method === 'DELETE' && parts[1] === 'volumes') { const had = this.volumes.delete(name); return { status: had ? 204 : 404, body: null }; }
     if (method === 'GET' && route === '/volumes') {
+      if (this.volumeStatus !== 200) return { status: this.volumeStatus, body: { message: 'the engine is busy' } };
       const filter = JSON.parse(decodeURIComponent(new URLSearchParams(query).get('filters') ?? '{}')) as { label?: string[] };
       const wanted: string[] = filter.label ?? [];
       return { status: 200, body: { Volumes: [...this.volumes.entries()].filter(([, labels]) => wanted.every((one) => { const [key = '', value = ''] = one.split('='); return labels[key] === value; })).map(([one, labels]) => ({ Name: one, Labels: labels })), Warnings: null } };
@@ -139,8 +166,9 @@ class FakeDocker implements DockerApi {
     }
     if (method === 'GET' && parts[1] === 'volumes') return { status: this.volumes.has(name) ? 200 : 404, body: {} };
     if (route === '/containers/json') {
+      if (this.listStatus !== 200) return { status: this.listStatus, body: { message: 'the engine is busy' } };
       const filter = JSON.parse(decodeURIComponent(new URLSearchParams(query).get('filters') ?? '{}')) as { name?: string[] };
-      return { status: 200, body: [...this.containers.entries()].filter(([one]) => filter.name === undefined || one.startsWith(filter.name[0] ?? '')).map(([one, each]) => ({ Names: [`/${one}`], Labels: each.spec['Labels'], State: each.running ? 'running' : 'exited' })) };
+      return { status: 200, body: [...this.containers.entries()].filter(([one]) => filter.name === undefined || one.startsWith(filter.name[0] ?? '')).map(([one, each]) => ({ Id: `cid-${one}`, Names: [`/${one}`], Labels: each.spec['Labels'], State: this.states.get(one) ?? (each.running ? 'running' : 'exited') })) };
     }
     if (route === '/containers/create') {
       const made: string = new URLSearchParams(query).get('name') ?? '';
@@ -149,7 +177,7 @@ class FakeDocker implements DockerApi {
       for (const net of nets) this.networks.get(net)?.members.add(made);
       this.containers.set(made, { spec, running: false, ip: `10.213.77.${this.serial++}`, token: null });
       this.made.push({ name: made, spec });
-      return { status: 201, body: { Id: made } };
+      return { status: 201, body: { Id: `cid-${made}` } };
     }
     const found = this.containers.get(name);
     if (method === 'GET' && route.endsWith('/logs')) {
@@ -158,9 +186,10 @@ class FakeDocker implements DockerApi {
       return { status: found === undefined ? 404 : 200, body: lines.length === 0 ? null : `${lines.slice(-tail).join('\n')}\n` };
     }
     if (method === 'GET' && route.endsWith('/json')) {
+      if (this.inspectStatus.has(name)) return { status: this.inspectStatus.get(name) ?? 500, body: { message: 'the engine is busy' } };
       if (found === undefined) return { status: 404, body: {} };
       const wire: string = String((found.spec['HostConfig'] as Record<string, unknown>)['NetworkMode']);
-      return { status: 200, body: { State: { Running: found.running }, Config: { User: found.spec['User'], Labels: found.spec['Labels'] }, HostConfig: found.spec['HostConfig'], NetworkSettings: { Networks: { [wire]: { IPAddress: found.ip } } } } };
+      return { status: 200, body: { Id: `cid-${name}`, State: { Running: found.running }, Config: { User: found.spec['User'], Labels: found.spec['Labels'] }, HostConfig: found.spec['HostConfig'], NetworkSettings: { Networks: { [wire]: { IPAddress: found.ip } } } } };
     }
     if (route.endsWith('/start')) { if (found !== undefined) found.running = true; return { status: 204, body: null }; }
     if (route.endsWith('/wait')) { if (found !== undefined) found.running = false; return { status: 200, body: { StatusCode: name.endsWith('-own') ? this.ownExit : 0 } }; }
@@ -182,7 +211,8 @@ class FakeDocker implements DockerApi {
     if (line.includes('berth-') && !this.silent && found.token !== null) {
       const identity: string = (found.spec['Labels'] as Record<string, string>)[`${BERTH_LABEL}.identity`] ?? '';
       if (!line.includes(berthKey_compute(identity))) return { code: 1, stdout: '', stderr: 'no such file' };
-      return { code: 0, stdout: JSON.stringify({ identity, url: 'ws://berth-host.example:41234', token: `attach-${container}` }), stderr: '' };
+      if (this.fileText !== null) return { code: 0, stdout: this.fileText, stderr: '' };
+      return { code: 0, stdout: JSON.stringify({ identity: this.fileIdentity ?? identity, url: 'ws://berth-host.example:41234', token: `attach-${container}` }), stderr: '' };
     }
     return { code: 1, stdout: '', stderr: 'no such file' };
   }
@@ -613,10 +643,80 @@ describe('the launcher over an engine', () => {
     const rudolph: string = identity_normalise('rudolph', CUBE);
     legacy_put(docker, 'rudolph', rudolph);
     docker.networks.set('mbw-net-ghost', { options: {}, members: new Set(['porter', `${berthNames_derive('mbw', ANA, 'ana').container}-own`]) });
-    expect(await launcher.orphans_clear()).toEqual(['mbw-net-ghost']);
+    // A berth whose name ends like a helper's but whose labels name a person: it, and its wire, stay; a true helper goes.
+    const bob: string = identity_normalise('bob', CUBE);
+    docker.containers.set('mbw-bob-x-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: bob, [`${BERTH_LABEL}.user`]: 'bob' }, HostConfig: { NetworkMode: 'mbw-net-bobown' } }, running: true, ip: '10.213.77.50', token: null });
+    docker.networks.set('mbw-net-bobown', { options: {}, members: new Set(['porter', 'mbw-bob-x-own']) });
+    docker.containers.set('mbw-y-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.helper`]: 'own' } }, running: false, ip: '', token: null });
+    expect((await launcher.orphans_clear()).sort()).toEqual(['mbw-net-ghost', 'mbw-y-own']);
     expect(docker.networks.has('mbw-net-ana')).toBe(true);
     expect(docker.networks.has('mbw-net-rudolph')).toBe(true);
     expect(docker.containers.has(berthNames_derive('mbw', rudolph, 'rudolph').containerLegacy)).toBe(true);
+    expect(docker.containers.has('mbw-bob-x-own')).toBe(true);
+    expect(docker.networks.get('mbw-net-bobown')?.members.has('porter')).toBe(true);
+    // A start whose helper's name is held by a container that names a person refuses, and removes nothing.
+    const cy: string = identity_normalise('cy', CUBE);
+    const helperName: string = `${berthNames_derive('mbw', cy, 'cy').container}-own`;
+    docker.containers.set(helperName, { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: bob, [`${BERTH_LABEL}.user`]: 'bob' }, HostConfig: { NetworkMode: 'mbw-net-bobown' } }, running: true, ip: '10.213.77.51', token: null });
+    await expect(launcher.start({ user: 'cy', uid: 9, gid: 9, cubeUrl: CUBE, token: 'cy-token' })).rejects.toThrow(`the helper's name ${helperName} is held by a berth`);
+    expect(docker.containers.has(helperName)).toBe(true);
+  });
+
+  it('cleanup and a helper\'s start act only on what the engine said: a refused listing or inspect removes and disconnects nothing; another spoke\'s helper is not ours', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    docker.networks.set('mbw-net-ghost', { options: {}, members: new Set(['porter']) });
+    docker.containers.set('mbw-x-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.helper`]: 'own' } }, running: false, ip: '', token: null });
+    docker.containers.set('other-x-own', { spec: { Labels: { [BERTH_LABEL]: 'other', [`${BERTH_LABEL}.helper`]: 'own' } }, running: false, ip: '', token: null });
+    // The container listing refused: nothing at all is removed or disconnected.
+    docker.destroys = [];
+    docker.listStatus = 500;
+    await expect(launcher.orphans_clear()).rejects.toThrow('nothing was cleared');
+    docker.listStatus = 200;
+    expect(docker.destroys).toEqual([]);
+    // A wire whose members cannot be read is left: no disconnect, no removal of any wire.
+    docker.wireInspectStatus = 500;
+    expect(await launcher.orphans_clear()).toEqual(['mbw-x-own']);
+    docker.wireInspectStatus = 200;
+    expect(docker.destroys.filter((one: string): boolean => one.includes('/networks/'))).toEqual([]);
+    expect(docker.networks.has('mbw-net-ghost')).toBe(true);
+    // Another spoke's helper is not this one's to remove.
+    expect(docker.containers.has('other-x-own')).toBe(true);
+    // A start whose helper name the engine cannot say the holder of, or another spoke's container holds, stops with nothing removed.
+    for (const [user, occupy] of [['cy', 'inspect fails'], ['dee', 'another spoke']] as const) {
+      const identity: string = identity_normalise(user, CUBE);
+      const helperName: string = `${berthNames_derive('mbw', identity, user).container}-own`;
+      if (occupy === 'inspect fails') docker.inspectStatus.set(helperName, 500);
+      else docker.containers.set(helperName, { spec: { Labels: { [BERTH_LABEL]: 'other' }, HostConfig: { NetworkMode: 'none' } }, running: false, ip: '', token: null });
+      docker.destroys = [];
+      await expect(launcher.start({ user, uid: 9, gid: 9, cubeUrl: CUBE, token: `${user}-token` })).rejects.toThrow(occupy === 'inspect fails' ? 'the engine could not say what holds' : 'held by a container this launcher did not make');
+      expect(docker.destroys.filter((one: string): boolean => one.includes(helperName))).toEqual([]);
+      docker.inspectStatus.clear();
+    }
+  });
+
+  it('a wire whose members the engine did not give whole is kept; an empty one still goes; a helper is run and removed by its own id, and only a removal the engine made is said', async () => {
+    const launcher: BerthLauncher = launcher_make(docker);
+    await launcher.start({ user: 'ana', uid: 7, gid: 7, cubeUrl: CUBE, token: 'ana-token' });
+    const owner: string = `${berthNames_derive('mbw', ANA, 'ana').container}-own`;
+    // The helper her start made was run, waited for and removed by the id the engine gave it, not by its name.
+    expect(docker.calls.filter((one: string): boolean => one.includes(owner))).toEqual(expect.arrayContaining([`POST /containers/cid-${owner}/start`, `POST /containers/cid-${owner}/wait`, `DELETE /containers/cid-${owner}`]));
+    expect(docker.calls.filter((one: string): boolean => one === `POST /containers/${owner}/start`)).toEqual([]);
+    for (const [wire, body] of [['mbw-net-nomap', { Name: 'mbw-net-nomap' }], ['mbw-net-list', { Name: 'mbw-net-list', Containers: [] }], ['mbw-net-noname', { Name: 'mbw-net-noname', Containers: { abc: { IPv4Address: '10.0.0.9/24' } } }], ['mbw-net-blank', { Name: 'mbw-net-blank', Containers: { abc: { Name: '   ' } } }], ['mbw-net-padded', { Name: 'mbw-net-padded', Containers: { abc: { Name: ' mbw-bob-x-own ' } } }]] as const) {
+      docker.networks.set(wire, { options: {}, members: new Set(['porter']) });
+      docker.wireBodies.set(wire, body);
+    }
+    docker.networks.set('mbw-net-empty', { options: {}, members: new Set() });
+    docker.wireBodies.set('mbw-net-empty', { Name: 'mbw-net-empty', Containers: {} });
+    docker.destroys = [];
+    expect(await launcher.orphans_clear()).toEqual(['mbw-net-empty']);
+    expect(docker.destroys.filter((one: string): boolean => /nomap|list|noname|blank|padded/.test(one))).toEqual([]);
+    // A removal the engine refuses is not said to have happened.
+    docker.wireBodies.clear();
+    docker.networks.set('mbw-net-stuck', { options: {}, members: new Set(['porter']) });
+    docker.unwireStatus = 409;
+    expect(await launcher.orphans_clear()).not.toContain('mbw-net-stuck');
+    docker.unwireStatus = 204;
   });
 
   it('refuses root, a name CUBE would not take, and a start with no token it holds', async () => {
@@ -850,6 +950,99 @@ describe('the launcher\'s API and porter\'s host over it', () => {
     expect(refused.status).toBe(401);
     const unknown = await launcher_call({ listen: join(dir, 'launcher.sock'), secret: SECRET }, 'POST', '/berths/exec', {});
     expect(unknown.status).toBe(404);
+  });
+
+  it('which berth is up, for a decision: an engine that does not list, or a running berth whose file cannot be read, is not "none"; an empty engine is', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    expect(await host.berthUp_read(ANA)).toBeNull();
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${berthNames_derive('mbw', ANA, 'ana').container}`);
+    docker.silent = true;
+    // Why is said on the wire: the berth file could not be read.
+    await expect(host.berthUp_read(ANA)).rejects.toThrow(/the launcher could not say which berth is up: (?!its address is unread)/);
+    expect(await host.find(ANA)).toBeNull();
+    docker.silent = false;
+    docker.listStatus = 500;
+    await expect(host.berthUp_read(ANA)).rejects.toThrow('the launcher could not say which berth is up (it answered 502)');
+    // A start counts the berths up for the spoke's room: an engine that does not list refuses it rather than counting none.
+    await expect(host.spawn(identity_normalise('ben', CUBE), 'ben', CUBE, 'ben-token')).rejects.toThrow('the engine did not list the berths');
+    docker.listStatus = 200;
+  });
+
+  it('which berth is up, for a decision, from rows in any order: a stopped row before the running one, a file naming another identity, a running container without whose it is', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    const labels = { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.identity`]: ANA, [`${BERTH_LABEL}.user`]: 'ana', [`${BERTH_LABEL}.cohort`]: 'none' };
+    // A stopped container of hers is listed before the running one.
+    docker.containers.set('mbw-aaa-old-ana', { spec: { User: '7:7', Labels: labels }, running: false, ip: '', token: null });
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${container}`);
+    expect((await host.find(ANA))?.token).toBe(`attach-${container}`);
+    // Her berth's file names somebody else: not her address.
+    docker.fileIdentity = identity_normalise('bob', CUBE);
+    await expect(host.berthUp_read(ANA)).rejects.toThrow('the berth file names another identity');
+    expect(await host.find(ANA)).toBeNull();
+    docker.fileIdentity = null;
+    // A half-written file, its token in it: the launcher says why in its own words, and none of the file's.
+    docker.fileText = 'MARKER-attach-secret {"token":1}';
+    let said: string = '';
+    await host.berthUp_read(ANA).catch((error: unknown): void => { said = error instanceof Error ? error.message : String(error); });
+    expect(said).toBe('the launcher could not say which berth is up: the berth file is not one');
+    const wire = await launcher_call(reach, 'GET', `/berths/status?user=ana&cubeUrl=${encodeURIComponent(CUBE)}`);
+    expect(JSON.stringify(wire.body)).not.toContain('MARKER');
+    docker.fileText = null;
+    // A running berth container that says whose it is not: it could be hers, and it takes room.
+    docker.containers.set('mbw-stray', { spec: { Labels: { [BERTH_LABEL]: 'mbw' } }, running: true, ip: '10.213.77.99', token: null });
+    await expect(host.berthUp_read(ANA)).rejects.toThrow('a running berth container carries no identity');
+    expect((await launcher_make(docker).status(null)).filter((one) => one.state === 'running').map((one) => one.identity).sort()).toEqual(['', ANA]);
+    docker.containers.delete('mbw-stray');
+    expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${container}`);
+  });
+
+  it('a berth\'s status counts only this spoke\'s berths: its helper and another spoke\'s container add nothing; a blank label is a missing one; paused or restarting is up and unread', async () => {
+    const reach = { listen: join(dir, 'launcher.sock'), secret: SECRET };
+    const host: LauncherHost = new LauncherHost(reach, async (): Promise<number> => 7);
+    const launcher: BerthLauncher = launcher_make(docker);
+    await host.spawn(ANA, 'ana', CUBE, 'ana-token');
+    const container: string = berthNames_derive('mbw', ANA, 'ana').container;
+    const runningOf = async (): Promise<string[]> => (await launcher.status(null)).filter((one) => one.state === 'running').map((one) => one.identity).sort();
+    // The volumes helper running beside her berth (labelled as one, and an older one by its name alone), and another spoke's container.
+    docker.containers.set(`${container}-own`, { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.helper`]: 'own' } }, running: true, ip: '', token: null });
+    docker.containers.set('mbw-older-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw' } }, running: true, ip: '', token: null });
+    docker.containers.set('other-spoke-berth', { spec: { Labels: { [BERTH_LABEL]: 'other', [`${BERTH_LABEL}.identity`]: identity_normalise('bob', CUBE), [`${BERTH_LABEL}.user`]: 'bob' } }, running: true, ip: '', token: null });
+    expect(await runningOf()).toEqual([ANA]);
+    expect((await host.berthUp_read(ANA))?.token).toBe(`attach-${container}`);
+    // A container that looks like a helper (its label, its name) but says whose it is: a berth, counted and read.
+    const bob: string = identity_normalise('bob', CUBE);
+    docker.containers.set('mbw-bob-x-own', { spec: { Labels: { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.helper`]: 'own', [`${BERTH_LABEL}.identity`]: bob, [`${BERTH_LABEL}.user`]: 'bob' } }, running: true, ip: '', token: null });
+    expect(await runningOf()).toEqual([ANA, bob].sort());
+    docker.containers.delete('mbw-bob-x-own');
+    // A berth container with a blank identity label is as one without: up, and anyone's.
+    for (const identity of ['', '   ', undefined]) {
+      const labels: Record<string, string> = { [BERTH_LABEL]: 'mbw', [`${BERTH_LABEL}.user`]: 'cy' };
+      if (identity !== undefined) labels[`${BERTH_LABEL}.identity`] = identity;
+      docker.containers.set('mbw-cy-blank', { spec: { Labels: labels }, running: true, ip: '', token: null });
+      await expect(host.berthUp_read(ANA)).rejects.toThrow('a running berth container carries no identity');
+      expect(await runningOf()).toEqual(['', ANA]);
+    }
+    docker.containers.delete('mbw-cy-blank');
+    // Paused, or restarting: up, holding its room, and where it answers not known.
+    for (const state of ['paused', 'restarting']) {
+      docker.states.set(container, state);
+      await expect(host.berthUp_read(ANA)).rejects.toThrow(`the berth is ${state}`);
+      expect(await runningOf()).toEqual([ANA]);
+      expect((await launcher.access_read(CUBE)).map((row) => `${row.user}:${row.state}`)).toEqual(['ana:running']);
+    }
+    docker.states.clear();
+    // The operator's reading refuses an engine that does not list, containers or homes, rather than say nobody is there.
+    docker.listStatus = 500;
+    await expect(launcher.access_read(CUBE)).rejects.toThrow('the engine did not list the berths');
+    docker.listStatus = 200;
+    docker.volumeStatus = 500;
+    await expect(launcher.access_read(CUBE)).rejects.toThrow('the engine did not list the homes');
+    docker.volumeStatus = 200;
   });
 
   it('an engine that refuses the stop is a failed stop all the way up: the berth stays, the sweep keeps its session, a restart starts nothing', async () => {

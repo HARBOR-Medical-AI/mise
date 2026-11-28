@@ -6,12 +6,15 @@
 import { describe, it, expect, beforeEach } from '@jest/globals';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { get as httpGet, type IncomingMessage } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { type PorterApp } from '../../src/app.js';
 import { doorApp_build as porterApp_build } from './fromDoor.js';
 import type { Berth, BootListener, BootReport, SessionHost } from '../../src/host/sessionHost.js';
 import type { PorterConfig } from '../../src/config.js';
 import { CredentialStore } from '../../src/creds.js';
+import { GrantStore } from '../../src/grants.js';
 
 const OWNER: string = 'rudolph@https://cube.example.org/api/v1/';
 const STRATUS: string = `stratus:oci@${OWNER}`;
@@ -66,6 +69,84 @@ function creds_file(): void {
 }
 
 describe('POST /switch', () => {
+  it('a switch whose write is under way when a logout arrives wins: the logout, its own write failing, stops no berth', async () => {
+    creds_file();
+    await door.app.close();
+    let evicts: number = 0;
+    host.evict = async (): Promise<boolean> => { evicts += 1; return true; };
+    let hold: Promise<void> | null = null;
+    let holding: boolean = false;
+    let fail: boolean = false;
+    const grants: GrantStore = new GrantStore(join(stateDir, 'race-grants.json'), 24, undefined, async (path: string, body: string): Promise<void> => {
+      const failing: boolean = fail;
+      const held: Promise<void> | null = hold;
+      hold = null;
+      if (held !== null) { holding = true; await held; }
+      if (failing) throw new Error('the disk is full');
+      writeFileSync(path, body, { mode: 0o600 });
+    });
+    door = await porterApp_build({ installed: {}, logoutEnds: true, config, host, grants, mint: async () => ({ token: 'T' }) });
+    const cookie: string = await login();
+    let release: () => void = (): void => undefined;
+    hold = new Promise<void>((resolve: () => void): void => { release = resolve; });
+    const switching = door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
+    for (let i = 0; i < 100 && !holding; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(holding).toBe(true);
+    fail = true;
+    const leaving = door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie } });
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    expect((await switching).json()).toMatchObject({ state: 'starting' });
+    expect((await leaving).statusCode).toBe(409);
+    expect(evicts).toBe(0);
+  });
+
+  it('ends the boot stream of the browser that switched, its follow let go, and leaves another browser\'s on the same session', async () => {
+    creds_file();
+    await door.app.close();
+    const following: Set<BootListener> = new Set();
+    host.boot_follow = (_identity: string, listener: BootListener): { report: BootReport; release: () => void } => {
+      following.add(listener);
+      return { report: { lines: [], state: 'booting' }, release: (): void => { following.delete(listener); } };
+    };
+    door = await porterApp_build({ installed: {}, config, host, mint: async () => ({ token: 'T' }) });
+    const first = await door.app.inject({ method: 'POST', url: '/login', payload: { username: 'rudolph', password: 'p' }, headers: { accept: 'application/json' } });
+    const a: string = String(first.headers['set-cookie']).split(';')[0] ?? '';
+    const key: string = String(first.json().key);
+    const b: string = await login();
+    await door.app.listen({ host: '127.0.0.1', port: 0 });
+    const port: number = (door.app.server.address() as AddressInfo).port;
+    const open = (cookie: string): { body: () => string; ended: Promise<void> } => {
+      let body: string = '';
+      const ended: Promise<void> = new Promise((resolve, reject) => {
+        httpGet({ host: '127.0.0.1', port, path: `/boot/${key}`, headers: { cookie } }, (response: IncomingMessage) => {
+          response.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+          response.on('end', () => resolve());
+        }).on('error', reject);
+      });
+      return { body: (): string => body, ended };
+    };
+    const until = async (ok: () => boolean): Promise<void> => {
+      for (let i = 0; i < 100 && !ok(); i++) await new Promise((r) => setTimeout(r, 30));
+      expect(ok()).toBe(true);
+    };
+    const streamA = open(a);
+    await until((): boolean => following.size === 1);
+    const followA: BootListener = [...following][0] as BootListener;
+    const streamB = open(b);
+    await until((): boolean => following.size === 2);
+    const followB: BootListener = [...following].find((one: BootListener): boolean => one !== followA) as BootListener;
+    const moved = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie: a } });
+    expect(moved.json()).toMatchObject({ state: 'starting' });
+    await streamA.ended;
+    expect(following.has(followA)).toBe(false);
+    followB.line({ channel: 'out', text: 'still here' });
+    await until((): boolean => streamB.body().includes('still here'));
+    await door.app.inject({ method: 'POST', url: '/logout', headers: { accept: 'application/json', cookie: b } });
+    await streamB.ended;
+    await door.app.close();
+  });
+
   it('refuses a browser with no session, and a person with no filed credentials, by name', async () => {
     expect((await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' } })).statusCode).toBe(401);
     const cookie: string = await login();
@@ -111,7 +192,9 @@ describe('POST /switch', () => {
     expect(host.begun.at(-1)).toMatchObject({ identity: STRATUS, spend: false, replace: true, door: { user: 'rudolph' } });
     // On the release it ships, the session is joined.
     host.up.set(STRATUS, { identity: 'u@t', url: 'ws://127.0.0.1:5555', token: 'S', versions: { stratus: '0.10.1', calypso: '0.29.0' } });
-    const joined = await newer.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
+    // A switch moves the browser's grant: the cookie it hands back is the one that lets the browser in now.
+    const moved: string = (String(switched.headers['set-cookie']).split(';')[0]) ?? '';
+    const joined = await newer.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie: moved } });
     expect(joined.json()).toMatchObject({ state: 'attached' });
     await newer.app.close();
   });
@@ -142,7 +225,11 @@ describe('POST /switch', () => {
     host.armed.set(STRATUS, false);
     const joined = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci' }, headers: { cookie } });
     expect(joined.json()).toMatchObject({ state: 'attached' });
-    const armed = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci', spend: true }, headers: { cookie } });
+    // The cookie the first switch moved is spent: it lets nobody in, and the one handed back does.
+    const spent = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci', spend: true }, headers: { cookie } });
+    expect(spent.statusCode).toBe(401);
+    const joinedCookie: string = (String(joined.headers['set-cookie']).split(';')[0]) ?? '';
+    const armed = await door.app.inject({ method: 'POST', url: '/switch', payload: { to: 'stratus', cloud: 'oci', spend: true }, headers: { cookie: joinedCookie } });
     expect(armed.json()).toMatchObject({ state: 'starting' });
     expect(host.begun.at(-1)).toMatchObject({ spend: true, replace: true });
     // From the stratus session's own cookie, back to the ChRIS one.
