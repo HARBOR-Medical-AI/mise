@@ -50,6 +50,22 @@ describe('config write', () => {
     expect(replaceContent).not.toHaveBeenCalled();
   });
 
+  it('uploads from a private copy (0600 in a folder of its own, 0700) and removes it on every way out', async () => {
+    const { existsSync, statSync, readFileSync } = await import('node:fs');
+    const { dirname } = await import('node:path');
+    let seen: { mode: number; folder: number; text: string } | null = null;
+    let local: string = '';
+    uploadPath.mockImplementation(async (path: string) => { local = path; seen = { mode: statSync(path).mode & 0o777, folder: statSync(dirname(path)).mode & 0o777, text: readFileSync(path, 'utf8') }; return true; });
+    await builtin_config(['write', '/home/t/x.desk', encode('view files\n')]);
+    expect(seen).toEqual({ mode: 0o600, folder: 0o700, text: 'view files\n' });
+    expect(existsSync(dirname(local))).toBe(false);
+    // A failed write removes it too.
+    uploadPath.mockImplementation(async (path: string) => { local = path; return false; });
+    replaceContent.mockResolvedValue({ success: false });
+    await builtin_config(['write', '/home/t/x.desk', encode('a')]);
+    expect(existsSync(dirname(local))).toBe(false);
+  });
+
   it('replaces in place when a fresh upload is refused (an existing file)', async () => {
     uploadPath.mockResolvedValue(false);
     const env = await builtin_config(['write', '/home/t/x.desk', encode('a')]);

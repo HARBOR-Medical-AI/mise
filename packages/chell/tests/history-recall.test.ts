@@ -8,6 +8,9 @@ import { jest, describe, it, expect, afterEach } from '@jest/globals';
 import { PassThrough } from 'node:stream';
 
 jest.unstable_mockModule('@fnndsc/brasa', () => ({
+  // The private copy a local edit opens (cliSurface imports them; nothing here edits).
+  privateTemp_write: jest.fn(),
+  suffix_safe: jest.fn(),
   segment_pipeThrough: jest.fn(async (): Promise<Buffer> => Buffer.from('')),
   file_read: jest.fn(),
   wireName_place: jest.fn(),

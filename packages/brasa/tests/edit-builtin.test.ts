@@ -140,6 +140,27 @@ describe('builtin_edit', () => {
     expect(env.renderedErr).toContain('Save failed');
     expect(env.renderedErr).toContain('preserved at');
     expect(process.exitCode).toBe(1);
+    // The preserved copy is the edit itself, 0600, in a folder of its own that only this account can open.
+    const kept: string = /preserved at: (\S+)/.exec(env.renderedErr ?? '')?.[1] ?? '';
+    const { readFileSync, statSync } = await import('node:fs');
+    const { dirname } = await import('node:path');
+    expect(readFileSync(kept, 'utf8')).toBe('EDITED CONTENT');
+    expect(statSync(kept).mode & 0o777).toBe(0o600);
+    expect(statSync(dirname(kept)).mode & 0o777).toBe(0o700);
+  });
+
+  it('removes its private copy once a save goes through, and keeps none at a predictable name', async () => {
+    mockCat.mockResolvedValue(ok('original'));
+    mockLocalEdit.mockResolvedValue({ content: 'EDITED CONTENT', changed: true });
+    let seen: string = '';
+    mockReplace.mockImplementation(async (_target: unknown, local: unknown) => { seen = String(local); return { success: true }; });
+    await builtin_edit(['notes.txt']);
+    const { existsSync } = await import('node:fs');
+    const { dirname, basename } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    expect(dirname(dirname(seen))).toBe(tmpdir());
+    expect(basename(dirname(seen))).toMatch(/^chell-edit-.{6}$/);
+    expect(existsSync(dirname(seen))).toBe(false);
   });
 });
 

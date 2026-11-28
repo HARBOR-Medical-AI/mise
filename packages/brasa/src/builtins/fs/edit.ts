@@ -25,10 +25,8 @@
  *
  * @module
  */
-import { vfsOutcome_convertToResult } from '@fnndsc/fond';
-import { writeFileSync, unlinkSync, existsSync } from 'fs';
-import { tmpdir } from 'os';
-import { join, extname, posix } from 'path';
+import { privateTemp_write, suffix_safe, vfsOutcome_convertToResult, type PrivateTemp } from '@fnndsc/fond';
+import { extname, posix } from 'path';
 import chalk from 'chalk';
 import { path_resolve, storePath_resolve, error_stripDebugPrefix } from '../utils.js';
 import { surface_get, capability_require, CapabilityError, type LocalEditResult } from '../../core/surface.js';
@@ -152,10 +150,12 @@ async function edit_run(named: string): Promise<CommandEnvelope> {
 
   // Upload the edited content: write it to a temp file the replace command
   // reads, and preserve that file (reporting its path) if the save fails.
-  const tmpPath: string = join(tmpdir(), `chell-edit-${Date.now()}${ext || '.txt'}`);
+  // In a folder of its own only this account can open (0700), created anew and 0600: nothing at a predictable
+  // name is followed, and nobody else reads the edit.
+  const temp: PrivateTemp = privateTemp_write('chell-edit-', `edit${suffix_safe(ext, '.txt')}`, edit.content);
+  const tmpPath: string = temp.path;
   let keepTmp: boolean = false;
   try {
-    writeFileSync(tmpPath, edit.content, 'utf8');
     const result: EditResult = await file_replaceContent(target, tmpPath);
     // The folder's listing is stale by both its names: where the store
     // keeps it, and the path the file was reached by.
@@ -172,9 +172,8 @@ async function edit_run(named: string): Promise<CommandEnvelope> {
     exitCode_set(1);
     return envelope_error('', undefined, renderedErr);
   } finally {
-    if (!keepTmp && existsSync(tmpPath)) {
-      try { unlinkSync(tmpPath); } catch { /* ignore */ }
-    }
+    // A failed save keeps the private copy (its path was said); every other way out removes it.
+    if (!keepTmp) temp.folder_remove();
   }
 }
 
